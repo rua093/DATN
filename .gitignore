@@ -1,0 +1,104 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Machine Learning Models (LARGE FILES)
+models/*.h5
+models/*.pkl
+models/*.joblib
+*.h5
+*.pkl
+*.joblib
+
+# Data files (LARGE FILES)
+data/*.csv
+data/*.json
+data/*.xlsx
+data/*.parquet
+*.csv
+*.json
+*.xlsx
+*.parquet
+
+# Results and outputs
+results/plots/*.png
+results/plots/*.jpg
+results/plots/*.pdf
+results/exports/*.json
+results/analysis/*.csv
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Cache
+.cache/
+*.cache
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Large files that shouldn't be in git
+*.zip
+*.tar.gz
+*.rar
+*.7z
