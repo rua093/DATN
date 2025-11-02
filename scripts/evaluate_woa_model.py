@@ -6,6 +6,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow.keras.models import load_model
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # Thiết lập font cho tiếng Việt
@@ -68,6 +69,7 @@ def calculate_metrics(y_true, y_pred):
 
 def plot_comparison(y_true, y_pred_basic, y_pred_woa, title="So sánh dự đoán"):
     """Vẽ đồ thị so sánh các mô hình"""
+    os.makedirs("../results", exist_ok=True)
     plt.figure(figsize=(15, 10))
     
     # Subplot 1: So sánh tổng thể
@@ -113,7 +115,8 @@ def plot_comparison(y_true, y_pred_basic, y_pred_woa, title="So sánh dự đoá
     plt.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig("results/compare_time_scatter_error.png", dpi=200)
+    plt.close()
 
 def plot_metrics_comparison(metrics_basic, metrics_woa):
     """Vẽ biểu đồ so sánh metrics"""
@@ -148,7 +151,8 @@ def plot_metrics_comparison(metrics_basic, metrics_woa):
                 f'{height:.4f}', ha='center', va='bottom', fontsize=9)
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig("results/compare_metrics_bar.png", dpi=200)
+    plt.close()
 
 def print_detailed_evaluation(metrics_basic, metrics_woa):
     """In báo cáo đánh giá chi tiết"""
@@ -203,7 +207,7 @@ def main():
     print("🔄 Đang tải dữ liệu và chuẩn bị đánh giá...")
     
     # 1. Load và tiền xử lý dữ liệu
-    df = pd.read_csv("../data/dataset_clean.csv")
+    df = pd.read_csv("data/dataset_clean.csv")
     X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
     
     # 2. Tạo sequences
@@ -225,7 +229,7 @@ def main():
     import os
     
     # Kiểm tra các file model có sẵn
-    model_files = [f for f in os.listdir('../models/') if f.endswith('.h5')]
+    model_files = [f for f in os.listdir('models/') if f.endswith('.h5')]
     print(f"📁 Các file model có sẵn: {model_files}")
     
     # Tìm mô hình cơ bản
@@ -238,13 +242,13 @@ def main():
     if basic_model_path:
         try:
             # Thử load với custom_objects để xử lý lỗi version
-            model_basic = load_model(f"../models/{basic_model_path}", compile=False)
+            model_basic = load_model(f"models/{basic_model_path}", compile=False)
             print(f"✅ Đã tải mô hình LSTM cơ bản: {basic_model_path}")
         except Exception as e:
             print(f"❌ Lỗi khi tải mô hình cơ bản: {e}")
             print("💡 Thử load model với compile=False...")
             try:
-                model_basic = load_model(f"../models/{basic_model_path}", compile=False)
+                model_basic = load_model(f"models/{basic_model_path}", compile=False)
                 print(f"✅ Đã tải mô hình LSTM cơ bản (compile=False): {basic_model_path}")
             except Exception as e2:
                 print(f"❌ Vẫn không thể load model: {e2}")
@@ -263,13 +267,13 @@ def main():
     
     if woa_model_path:
         try:
-            model_woa = load_model(f"../models/{woa_model_path}", compile=False)
+            model_woa = load_model(f"models/{woa_model_path}", compile=False)
             print(f"✅ Đã tải mô hình LSTM + WOA: {woa_model_path}")
         except Exception as e:
             print(f"❌ Lỗi khi tải mô hình WOA: {e}")
             print("💡 Thử load model với compile=False...")
             try:
-                model_woa = load_model(f"../models/{woa_model_path}", compile=False)
+                model_woa = load_model(f"models/{woa_model_path}", compile=False)
                 print(f"✅ Đã tải mô hình LSTM + WOA (compile=False): {woa_model_path}")
             except Exception as e2:
                 print(f"❌ Vẫn không thể load model WOA: {e2}")
@@ -314,7 +318,7 @@ def main():
         for metric in metrics_basic.keys()
     ]
     
-    evaluation_results.to_csv("../data/evaluation_results_woa.csv", index=False)
+    evaluation_results.to_csv("data/evaluation_results_woa.csv", index=False)
     print("\n💾 Kết quả đánh giá đã được lưu vào 'evaluation_results_woa.csv'")
     
     print("\n🎉 Hoàn thành đánh giá mô hình!")

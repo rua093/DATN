@@ -11,6 +11,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow.keras.models import load_model
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 def load_and_compare_models():
@@ -19,7 +20,7 @@ def load_and_compare_models():
     print("🔄 Đang tải và so sánh các mô hình...")
     
     # Đọc dữ liệu
-    df = pd.read_csv("../data/dataset_clean.csv")
+    df = pd.read_csv("data/dataset_clean.csv")
     
     # Tiền xử lý (giống như trong training)
     if "DATE" in df.columns:
@@ -70,17 +71,17 @@ def load_and_compare_models():
     models_to_compare = [
         {
             'name': 'LSTM Cơ bản',
-            'path': '../models/my_lstm_model_optimized.h5',
+            'path': 'models/my_lstm_model_optimized.h5',
             'color': 'blue'
         },
         {
             'name': 'LSTM + WOA',
-            'path': '../models/my_lstm_model_woa.h5',
+            'path': 'models/my_lstm_model_woa.h5',
             'color': 'orange'
         },
         {
             'name': 'Advanced LSTM',
-            'path': '../models/advanced_lstm_model.h5',
+            'path': 'models/advanced_lstm_model.h5',
             'color': 'green'
         }
     ]
@@ -139,6 +140,7 @@ def create_comparison_plots(results, y_test_orig):
     } for r in results])
     
     # Tạo subplot
+    os.makedirs("../results", exist_ok=True)
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
     fig.suptitle('So sánh Hiệu suất các Mô hình LSTM', fontsize=16, fontweight='bold')
     
@@ -179,7 +181,8 @@ def create_comparison_plots(results, y_test_orig):
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig("results/compare_metrics_and_predictions.png", dpi=200)
+    plt.close()
     
     # 3. Scatter plots cho từng mô hình
     fig, axes = plt.subplots(1, len(results), figsize=(5*len(results), 5))
@@ -197,7 +200,8 @@ def create_comparison_plots(results, y_test_orig):
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.show()
+    plt.savefig("results/compare_scatter_each_model.png", dpi=200)
+    plt.close()
 
 def print_detailed_comparison(results):
     """In báo cáo so sánh chi tiết"""
@@ -273,7 +277,7 @@ def save_comparison_results(results):
     } for r in results])
     
     # Lưu CSV
-    df_results.to_csv("../data/model_comparison_results.csv", index=False)
+    df_results.to_csv("data/model_comparison_results.csv", index=False)
     print("💾 Kết quả đã lưu: data/model_comparison_results.csv")
     
     # Lưu JSON cho web
@@ -283,7 +287,7 @@ def save_comparison_results(results):
         'models': df_results.to_dict('records')
     }
     
-    with open("../data/model_comparison_results.json", "w", encoding="utf-8") as f:
+    with open("data/model_comparison_results.json", "w", encoding="utf-8") as f:
         json.dump(comparison_data, f, indent=2, ensure_ascii=False)
     
     print("💾 JSON đã lưu: data/model_comparison_results.json")

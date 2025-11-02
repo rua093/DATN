@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import os
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import tensorflow as tf
@@ -49,7 +50,8 @@ def create_sequences(X, y, timesteps=24):
     return np.array(Xs), np.array(ys)
 
 # ======== 2. Đọc dữ liệu ========
-df = pd.read_csv("../data/dataset_clean.csv")
+df = pd.read_csv("data/dataset_clean.csv")
+os.makedirs("results", exist_ok=True)
 X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
 
 timesteps = 24
@@ -112,6 +114,7 @@ def WOA(fitness, bounds, n_agents=5, max_iter=10):
     best_pos = whales[0].copy()
     best_score = fitness(best_pos)
 
+    best_history = []
     for i in range(max_iter):
         a = 2 - i * (2 / max_iter)  # giảm dần
         for j in range(n_agents):
@@ -141,7 +144,20 @@ def WOA(fitness, bounds, n_agents=5, max_iter=10):
                 best_pos = whales[j].copy()
 
         print(f"Iter {i+1}/{max_iter} - Best val_loss: {best_score:.4f}")
+        best_history.append(best_score)
 
+    # Save convergence plot
+    try:
+        plt.figure(figsize=(8,4))
+        plt.plot(best_history, marker='o')
+        plt.title('WOA Convergence (Best val_loss per iteration)')
+        plt.xlabel('Iteration')
+        plt.ylabel('Best val_loss')
+        plt.tight_layout()
+        plt.savefig("results/woa_convergence.png", dpi=200)
+        plt.close()
+    except Exception:
+        pass
     return best_pos, best_score
 
 # ======== 5. Chạy tối ưu WOA ========
@@ -177,7 +193,7 @@ history = final_model.fit(
     callbacks=[es_final]
 )
 
-final_model.save("../models/my_lstm_model_woa.h5")
+final_model.save("models/my_lstm_model_woa.h5")
 print("Model đã được lưu thành công!")
 
 # ======== 7. Đánh giá trên tập test ========
@@ -199,11 +215,36 @@ plt.title("So sánh giá trị thực tế và dự đoán (200 điểm đầu)"
 plt.xlabel("Thời điểm")
 plt.ylabel("ENERGY")
 plt.legend()
-plt.show()
+plt.tight_layout()
+plt.savefig("results/woa_actual_vs_pred_200.png", dpi=200)
+plt.close()
+
+# Scatter plot
+plt.figure(figsize=(6,6))
+plt.scatter(y_test_orig, y_pred, alpha=0.6)
+y_min, y_max = y_test_orig.min(), y_test_orig.max()
+plt.plot([y_min, y_max], [y_min, y_max], 'r--')
+plt.xlabel('Giá trị thực tế')
+plt.ylabel('Giá trị dự đoán')
+plt.title('Scatter: Thực tế vs Dự đoán (WOA)')
+plt.tight_layout()
+plt.savefig("results/woa_scatter_actual_vs_pred.png", dpi=200)
+plt.close()
+
+# Residual histogram
+residuals = y_test_orig.flatten() - y_pred.flatten()
+plt.figure(figsize=(8,4))
+plt.hist(residuals, bins=50, alpha=0.8, edgecolor='black')
+plt.title('Phân bố Sai số Dự đoán (WOA)')
+plt.xlabel('Sai số')
+plt.ylabel('Tần suất')
+plt.tight_layout()
+plt.savefig("results/woa_residual_hist.png", dpi=200)
+plt.close()
 
 df_result = pd.DataFrame({
     "ThucTe": y_test_orig.flatten(),
     "DuDoan": y_pred.flatten()
 })
-df_result.to_csv("../data/ketqua_du_doan_woa.csv", index=False)
+df_result.to_csv("data/ketqua_du_doan_woa.csv", index=False)
 print("Kết quả dự đoán đã lưu vào 'ketqua_du_doan_woa.csv'.")

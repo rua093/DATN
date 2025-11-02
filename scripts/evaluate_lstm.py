@@ -5,6 +5,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow.keras.models import load_model
 import matplotlib.pyplot as plt
+import os
 
 # --- 1. Tiền xử lý dữ liệu giống file train ---
 def preprocess_for_lstm(df):
@@ -40,7 +41,8 @@ def create_sequences(X, y, timesteps=24):
 # --- 3. Main ---
 if __name__ == "__main__":
     # Load dữ liệu
-    df = pd.read_csv("../data/dataset_clean.csv")
+    df = pd.read_csv("data/dataset_clean.csv")
+    os.makedirs("results", exist_ok=True)
     X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
 
     timesteps = 24
@@ -56,8 +58,14 @@ if __name__ == "__main__":
     print("Test set shape:", X_test.shape)
 
     # --- 4. Load model ---
-    model = load_model("../models/my_lstm_model_optimized.h5")
-    print("Model đã được load thành công!")
+    try:
+        model = load_model("models/my_lstm_model_optimized.h5", compile=False)
+        print("Model đã được load thành công!")
+    except Exception as e:
+        print(f"Lỗi khi load model: {e}")
+        print("Thử load model với compile=False...")
+        model = load_model("models/my_lstm_model_optimized.h5", compile=False)
+        print("Model đã được load thành công!")
 
     # --- 5. Dự đoán ---
     y_pred_scaled = model.predict(X_test)
@@ -72,7 +80,7 @@ if __name__ == "__main__":
 
     print(f"MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}")
 
-    # --- 7. Vẽ đồ thị so sánh (chỉ vài điểm đầu cho trực quan) ---
+    # --- 7. Lưu đồ thị so sánh (200 điểm đầu) ---
     plt.figure(figsize=(12,6))
     plt.plot(y_test_orig[:200], label='Thực tế')
     plt.plot(y_pred[:200], label='Dự đoán')
@@ -80,12 +88,37 @@ if __name__ == "__main__":
     plt.xlabel("Thời điểm")
     plt.ylabel("ENERGY")
     plt.legend()
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("results/eval_actual_vs_pred_200.png", dpi=200)
+    plt.close()
+
+    # --- 7b. Scatter plot và lưu ---
+    plt.figure(figsize=(6,6))
+    plt.scatter(y_test_orig, y_pred, alpha=0.6)
+    y_min, y_max = y_test_orig.min(), y_test_orig.max()
+    plt.plot([y_min, y_max], [y_min, y_max], 'r--')
+    plt.xlabel('Giá trị thực tế')
+    plt.ylabel('Giá trị dự đoán')
+    plt.title('Scatter: Thực tế vs Dự đoán')
+    plt.tight_layout()
+    plt.savefig("results/eval_scatter_actual_vs_pred.png", dpi=200)
+    plt.close()
+
+    # --- 7c. Phân bố sai số ---
+    residuals = y_test_orig.flatten() - y_pred.flatten()
+    plt.figure(figsize=(8,4))
+    plt.hist(residuals, bins=50, alpha=0.8, edgecolor='black')
+    plt.title('Phân bố Sai số Dự đoán')
+    plt.xlabel('Sai số')
+    plt.ylabel('Tần suất')
+    plt.tight_layout()
+    plt.savefig("results/eval_residual_hist.png", dpi=200)
+    plt.close()
 
     # --- 8. Lưu kết quả dự đoán ---
     df_result = pd.DataFrame({
         "ThucTe": y_test_orig.flatten(),
         "DuDoan": y_pred.flatten()
     })
-    df_result.to_csv("../data/ketqua_du_doan_eval.csv", index=False)
+    df_result.to_csv("data/ketqua_du_doan_eval.csv", index=False)
     print("Kết quả dự đoán đã lưu vào 'ketqua_du_doan_eval.csv'.")

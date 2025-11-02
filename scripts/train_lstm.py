@@ -7,6 +7,7 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout
 from tensorflow.keras.callbacks import EarlyStopping
 import matplotlib.pyplot as plt
 import tensorflow as tf
+import os
 
 np.random.seed(42)
 tf.random.set_seed(42)
@@ -47,7 +48,8 @@ def create_sequences(X, y, timesteps=24):
 
 if __name__ == "__main__":
 
-    df = pd.read_csv("../data/dataset_clean.csv")
+    df = pd.read_csv("data/dataset_clean.csv")
+    os.makedirs("results", exist_ok=True)
     X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
 
     timesteps = 24
@@ -85,7 +87,7 @@ if __name__ == "__main__":
         callbacks=[es]
     )
 
-    model.save("../models/my_lstm_model_optimized.h5")
+    model.save("models/my_lstm_model_optimized.h5")
     print("Model đã được lưu thành công!")
 
     y_pred_scaled = model.predict(X_test)
@@ -99,6 +101,7 @@ if __name__ == "__main__":
 
     print(f"MAE: {mae:.4f}, MSE: {mse:.4f}, RMSE: {rmse:.4f}, R²: {r2:.4f}")
 
+    # Lưu biểu đồ: Actual vs Predicted (200 điểm đầu)
     plt.figure(figsize=(12,6))
     plt.plot(y_test_orig[:200], label='Thực tế')
     plt.plot(y_pred[:200], label='Dự đoán')
@@ -106,11 +109,48 @@ if __name__ == "__main__":
     plt.xlabel("Thời điểm")
     plt.ylabel("ENERGY")
     plt.legend()
-    plt.show()
+    plt.tight_layout()
+    plt.savefig("results/train_actual_vs_pred_200.png", dpi=200)
+    plt.close()
+
+    # Lưu biểu đồ: Training/Validation Loss
+    plt.figure(figsize=(10,5))
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.title('Training History')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("results/train_history_loss.png", dpi=200)
+    plt.close()
+
+    # Lưu biểu đồ: Scatter Plot Actual vs Predicted
+    plt.figure(figsize=(6,6))
+    plt.scatter(y_test_orig, y_pred, alpha=0.6)
+    y_min, y_max = y_test_orig.min(), y_test_orig.max()
+    plt.plot([y_min, y_max], [y_min, y_max], 'r--')
+    plt.xlabel('Giá trị thực tế')
+    plt.ylabel('Giá trị dự đoán')
+    plt.title('Scatter: Thực tế vs Dự đoán')
+    plt.tight_layout()
+    plt.savefig("results/train_scatter_actual_vs_pred.png", dpi=200)
+    plt.close()
+
+    # Lưu biểu đồ: Phân bố sai số (Residuals)
+    residuals = y_test_orig.flatten() - y_pred.flatten()
+    plt.figure(figsize=(8,4))
+    plt.hist(residuals, bins=50, alpha=0.8, edgecolor='black')
+    plt.title('Phân bố Sai số Dự đoán')
+    plt.xlabel('Sai số')
+    plt.ylabel('Tần suất')
+    plt.tight_layout()
+    plt.savefig("results/train_residual_hist.png", dpi=200)
+    plt.close()
 
     df_result = pd.DataFrame({
         "ThucTe": y_test_orig.flatten(),
         "DuDoan": y_pred.flatten()
     })
-    df_result.to_csv("../data/ketqua_du_doan_optimized.csv", index=False)
+    df_result.to_csv("data/ketqua_du_doan_optimized.csv", index=False)
     print("Kết quả dự đoán đã lưu vào 'ketqua_du_doan_optimized.csv'.")
