@@ -12,23 +12,17 @@ def preprocess_for_lstm(df):
     if "DATE" in df.columns:
         df = df.drop(columns=["DATE"])
     data = df.copy()
-    data["HOUR_sin"] = np.sin(2 * np.pi * data["HOUR"] / 24)
-    data["HOUR_cos"] = np.cos(2 * np.pi * data["HOUR"] / 24)
     data["DAY_sin"] = np.sin(2 * np.pi * data["DAY"] / 31)
     data["DAY_cos"] = np.cos(2 * np.pi * data["DAY"] / 31)
     data["MONTH_sin"] = np.sin(2 * np.pi * data["MONTH"] / 12)
     data["MONTH_cos"] = np.cos(2 * np.pi * data["MONTH"] / 12)
     data["WEEKDAY_sin"] = np.sin(2 * np.pi * data["WEEKDAY"] / 7)
     data["WEEKDAY_cos"] = np.cos(2 * np.pi * data["WEEKDAY"] / 7)
-    data = data.drop(columns=["DAY", "MONTH", "HOUR", "WEEKDAY"])
-    target_col = "ENERGY"
+    data = data.drop(columns=["DAY", "MONTH", "WEEKDAY"])
+    target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in data.columns else "ENERGY"
     y = data[[target_col]].values
     X = data.drop(columns=[target_col]).values
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
-    X_scaled = scaler_X.fit_transform(X)
-    y_scaled = scaler_y.fit_transform(y)
-    return X_scaled, y_scaled, scaler_X, scaler_y
+    return X, y
 
 # --- 2. Tạo sequence giống file train ---
 def create_sequences(X, y, timesteps=24):
@@ -43,18 +37,34 @@ if __name__ == "__main__":
     # Load dữ liệu
     df = pd.read_csv("data/dataset_clean.csv")
     os.makedirs("results", exist_ok=True)
-    X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
+    X_raw, y_raw = preprocess_for_lstm(df)
 
     timesteps = 24
-    X_seq, y_seq = create_sequences(X_scaled, y_scaled, timesteps)
+    X_seq_raw, y_seq_raw = create_sequences(X_raw, y_raw, timesteps)
 
     # Chia dữ liệu test (giữ nguyên chia train/val/test nếu cần)
-    total_size = len(X_seq)
+    total_size = len(X_seq_raw)
     train_size = int(total_size * 0.7)
     val_size = int(total_size * 0.15)
 
-    X_test = X_seq[train_size+val_size:]
-    y_test = y_seq[train_size+val_size:]
+    X_train_raw = X_seq_raw[:train_size]
+    y_train_raw = y_seq_raw[:train_size]
+    X_val_raw = X_seq_raw[train_size:train_size+val_size]
+    y_val_raw = y_seq_raw[train_size:train_size+val_size]
+    X_test_raw = X_seq_raw[train_size+val_size:]
+    y_test_raw = y_seq_raw[train_size+val_size:]
+
+    # Fit scaler trên train rồi transform val/test
+    num_features = X_train_raw.shape[2]
+    scaler_X = MinMaxScaler()
+    X_train = scaler_X.fit_transform(X_train_raw.reshape(-1, num_features)).reshape(X_train_raw.shape)
+    X_val = scaler_X.transform(X_val_raw.reshape(-1, num_features)).reshape(X_val_raw.shape)
+    X_test = scaler_X.transform(X_test_raw.reshape(-1, num_features)).reshape(X_test_raw.shape)
+
+    scaler_y = MinMaxScaler()
+    y_train = scaler_y.fit_transform(y_train_raw)
+    y_val = scaler_y.transform(y_val_raw)
+    y_test = scaler_y.transform(y_test_raw)
     print("Test set shape:", X_test.shape)
 
     # --- 4. Load model ---

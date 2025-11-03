@@ -27,17 +27,15 @@ def load_and_compare_models():
         df = df.drop(columns=["DATE"])
     
     data = df.copy()
-    data["HOUR_sin"] = np.sin(2 * np.pi * data["HOUR"] / 24)
-    data["HOUR_cos"] = np.cos(2 * np.pi * data["HOUR"] / 24)
     data["DAY_sin"] = np.sin(2 * np.pi * data["DAY"] / 31)
     data["DAY_cos"] = np.cos(2 * np.pi * data["DAY"] / 31)
     data["MONTH_sin"] = np.sin(2 * np.pi * data["MONTH"] / 12)
     data["MONTH_cos"] = np.cos(2 * np.pi * data["MONTH"] / 12)
     data["WEEKDAY_sin"] = np.sin(2 * np.pi * data["WEEKDAY"] / 7)
     data["WEEKDAY_cos"] = np.cos(2 * np.pi * data["WEEKDAY"] / 7)
-    data = data.drop(columns=["DAY", "MONTH", "HOUR", "WEEKDAY"])
+    data = data.drop(columns=["DAY", "MONTH", "WEEKDAY"])
     
-    target_col = "ENERGY"
+    target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in data.columns else "ENERGY"
     y = data[[target_col]].values
     X = data.drop(columns=[target_col]).values
     

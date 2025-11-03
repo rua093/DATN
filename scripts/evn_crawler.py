@@ -91,6 +91,7 @@ class EVNCrawler:
                 EC.presence_of_element_located((By.XPATH, "//*[@class='form-control f-w-normal f-size-14 input-user']"))
             )
             username_field.clear()
+            
             username_field.send_keys(username)
             
             password_field = wait.until(

@@ -12,27 +12,31 @@ warnings.filterwarnings('ignore')
 # Thiết lập font cho tiếng Việt
 plt.rcParams['font.family'] = 'DejaVu Sans'
 
-def preprocess_for_lstm(df):
-    """Tiền xử lý dữ liệu giống như trong quá trình training"""
+def preprocess_for_lstm(df, include_target_in_X=False):
+    """Tiền xử lý dữ liệu.
+    include_target_in_X: nếu True, giữ cả cột mục tiêu trong X (AR inputs) để
+    phù hợp với mô hình được train theo kiểu này.
+    """
     if "DATE" in df.columns:
         df = df.drop(columns=["DATE"])
     
     data = df.copy()
     
     # Cyclic encoding cho các biến thời gian
-    data["HOUR_sin"] = np.sin(2 * np.pi * data["HOUR"] / 24)
-    data["HOUR_cos"] = np.cos(2 * np.pi * data["HOUR"] / 24)
     data["DAY_sin"] = np.sin(2 * np.pi * data["DAY"] / 31)
     data["DAY_cos"] = np.cos(2 * np.pi * data["DAY"] / 31)
     data["MONTH_sin"] = np.sin(2 * np.pi * data["MONTH"] / 12)
     data["MONTH_cos"] = np.cos(2 * np.pi * data["MONTH"] / 12)
     data["WEEKDAY_sin"] = np.sin(2 * np.pi * data["WEEKDAY"] / 7)
     data["WEEKDAY_cos"] = np.cos(2 * np.pi * data["WEEKDAY"] / 7)
-    data = data.drop(columns=["DAY", "MONTH", "HOUR", "WEEKDAY"])
+    data = data.drop(columns=["DAY", "MONTH", "WEEKDAY"])
     
-    target_col = "ENERGY"
+    target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in data.columns else "ENERGY"
     y = data[[target_col]].values
-    X = data.drop(columns=[target_col]).values
+    if include_target_in_X:
+        X = data.values
+    else:
+        X = data.drop(columns=[target_col]).values
     
     scaler_X = MinMaxScaler()
     scaler_y = MinMaxScaler()
@@ -206,26 +210,10 @@ def main():
     """Hàm chính để đánh giá mô hình"""
     print("🔄 Đang tải dữ liệu và chuẩn bị đánh giá...")
     
-    # 1. Load và tiền xử lý dữ liệu
+    # 1. Load dữ liệu gốc (chưa scale)
     df = pd.read_csv("data/dataset_clean.csv")
-    X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
     
-    # 2. Tạo sequences
-    timesteps = 24
-    X_seq, y_seq = create_sequences(X_scaled, y_scaled, timesteps)
-    
-    # 3. Chia dữ liệu test
-    total_size = len(X_seq)
-    train_size = int(total_size * 0.7)
-    val_size = int(total_size * 0.15)
-    
-    X_test = X_seq[train_size+val_size:]
-    y_test = y_seq[train_size+val_size:]
-    y_test_orig = scaler_y.inverse_transform(y_test)
-    
-    print(f"✅ Dữ liệu test: {X_test.shape[0]} mẫu")
-    
-    # 4. Load các mô hình
+    # 2. Load các mô hình
     import os
     
     # Kiểm tra các file model có sẵn
@@ -283,13 +271,56 @@ def main():
         print("💡 Hãy chạy lstm_woa_optimize.py trước để tạo mô hình WOA")
         return
     
-    # 5. Dự đoán
+    # 3. Chuẩn bị dữ liệu test theo đúng cấu hình từng mô hình
+    #    - Suy ra timesteps và số đặc trưng từ input_shape
+    t_basic = model_basic.input_shape[1]
+    f_basic = model_basic.input_shape[2]
+    t_woa   = model_woa.input_shape[1]
+    f_woa   = model_woa.input_shape[2]
+
+    # Dựng pipeline riêng cho từng mô hình để tránh lệch số đặc trưng
+    # a) Cho mô hình cơ bản (không giữ target trong X nếu số đặc trưng khớp như vậy)
+    keep_target_basic = False
+    # Thử 2 khả năng: nếu số cột khi có target khớp thì đặt True
+    X_all_keep, y_all, scaler_X_keep, scaler_y_keep = preprocess_for_lstm(df, include_target_in_X=True)
+    X_all_drop, _,      scaler_X_drop, _            = preprocess_for_lstm(df, include_target_in_X=False)
+    if X_all_keep.shape[1] == f_basic:
+        keep_target_basic = True
+        Xb_scaled, yb_scaled, sXb, sY = X_all_keep, y_all, scaler_X_keep, scaler_y_keep
+    else:
+        Xb_scaled, yb_scaled, sXb, sY = X_all_drop, y_all, scaler_X_drop, scaler_y_keep
+
+    Xb_seq, yb_seq = create_sequences(Xb_scaled, yb_scaled, t_basic)
+    total_b = len(Xb_seq)
+    train_b = int(total_b * 0.7)
+    val_b   = int(total_b * 0.15)
+    Xb_test = Xb_seq[train_b+val_b:]
+    yb_test = yb_seq[train_b+val_b:]
+
+    # b) Cho mô hình WOA
+    keep_target_woa = (X_all_keep.shape[1] == f_woa)
+    if keep_target_woa:
+        Xw_scaled, yw_scaled, sXw, sYw = X_all_keep, y_all, scaler_X_keep, scaler_y_keep
+    else:
+        Xw_scaled, yw_scaled, sXw, sYw = X_all_drop, y_all, scaler_X_drop, scaler_y_keep
+    Xw_seq, yw_seq = create_sequences(Xw_scaled, yw_scaled, t_woa)
+    total_w = len(Xw_seq)
+    train_w = int(total_w * 0.7)
+    val_w   = int(total_w * 0.15)
+    Xw_test = Xw_seq[train_w+val_w:]
+    yw_test = yw_seq[train_w+val_w:]
+
+    # Lấy y_test gốc theo mô hình WOA để dùng chung khi so sánh
+    y_test_orig = sYw.inverse_transform(yw_test)
+    print(f"✅ Dữ liệu test: {Xw_test.shape[0]} mẫu")
+
+    # 4. Dự đoán
     print("🔄 Đang thực hiện dự đoán...")
-    y_pred_basic_scaled = model_basic.predict(X_test)
-    y_pred_woa_scaled = model_woa.predict(X_test)
+    y_pred_basic_scaled = model_basic.predict(Xb_test)
+    y_pred_woa_scaled   = model_woa.predict(Xw_test)
     
-    y_pred_basic = scaler_y.inverse_transform(y_pred_basic_scaled)
-    y_pred_woa = scaler_y.inverse_transform(y_pred_woa_scaled)
+    y_pred_basic = sY.inverse_transform(y_pred_basic_scaled)
+    y_pred_woa   = sYw.inverse_transform(y_pred_woa_scaled)
     
     # 6. Tính metrics
     print("🔄 Đang tính toán metrics...")

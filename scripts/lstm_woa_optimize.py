@@ -21,26 +21,20 @@ def preprocess_for_lstm(df):
 
     data = df.copy()
 
-    data["HOUR_sin"] = np.sin(2 * np.pi * data["HOUR"] / 24)
-    data["HOUR_cos"] = np.cos(2 * np.pi * data["HOUR"] / 24)
     data["DAY_sin"] = np.sin(2 * np.pi * data["DAY"] / 31)
     data["DAY_cos"] = np.cos(2 * np.pi * data["DAY"] / 31)
     data["MONTH_sin"] = np.sin(2 * np.pi * data["MONTH"] / 12)
     data["MONTH_cos"] = np.cos(2 * np.pi * data["MONTH"] / 12)
     data["WEEKDAY_sin"] = np.sin(2 * np.pi * data["WEEKDAY"] / 7)
     data["WEEKDAY_cos"] = np.cos(2 * np.pi * data["WEEKDAY"] / 7)
-    data = data.drop(columns=["DAY", "MONTH", "HOUR", "WEEKDAY"])
+    data = data.drop(columns=["DAY", "MONTH", "WEEKDAY"])
 
-    target_col = "ENERGY"
+    target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in data.columns else "ENERGY"
     y = data[[target_col]].values
-    X = data.drop(columns=[target_col]).values
-
-    scaler_X = MinMaxScaler()
-    scaler_y = MinMaxScaler()
-    X_scaled = scaler_X.fit_transform(X)
-    y_scaled = scaler_y.fit_transform(y)
-
-    return X_scaled, y_scaled, scaler_X, scaler_y
+    # Giữ cả cột mục tiêu trong đặc trưng để LSTM nhìn thấy giá trị quá khứ của đích
+    # giúp mô hình nắm bắt cấu trúc tự hồi quy (AR)
+    X = data.values
+    return X, y
 
 def create_sequences(X, y, timesteps=24):
     Xs, ys = [], []
@@ -49,55 +43,78 @@ def create_sequences(X, y, timesteps=24):
         ys.append(y[i+timesteps])
     return np.array(Xs), np.array(ys)
 
-# ======== 2. Đọc dữ liệu ========
+# ======== 2. Đọc dữ liệu (raw, chưa tạo sequence) ========
 df = pd.read_csv("data/dataset_clean.csv")
 os.makedirs("results", exist_ok=True)
-X_scaled, y_scaled, scaler_X, scaler_y = preprocess_for_lstm(df)
-
-timesteps = 24
-X_seq, y_seq = create_sequences(X_scaled, y_scaled, timesteps)
-
-total_size = len(X_seq)
-train_size = int(total_size * 0.7)
-val_size   = int(total_size * 0.15)
-
-X_train = X_seq[:train_size]
-y_train = y_seq[:train_size]
-X_val   = X_seq[train_size:train_size+val_size]
-y_val   = y_seq[train_size:train_size+val_size]
-X_test  = X_seq[train_size+val_size:]
-y_test  = y_seq[train_size+val_size:]
-
-print(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+X_raw, y_raw = preprocess_for_lstm(df)
 
 # ======== 3. Hàm tạo model và hàm fitness ========
 def create_lstm_model(units, dropout, lr, input_shape):
     model = Sequential()
-    model.add(LSTM(units, input_shape=input_shape))
+    # Tăng khả năng biểu diễn: 2 lớp LSTM + Dense ẩn
+    model.add(LSTM(units, return_sequences=True, input_shape=input_shape))
     model.add(Dropout(dropout))
+    model.add(LSTM(max(16, units // 2)))
+    model.add(Dropout(dropout))
+    model.add(Dense(32, activation='relu'))
     model.add(Dense(1))
-    model.compile(optimizer=Adam(learning_rate=lr), loss="mse")
+    model.compile(optimizer=Adam(learning_rate=lr), loss=tf.keras.losses.Huber())
     return model
+
+# Mở rộng cửa sổ để bao phủ mùa vụ ngày/tuần (tùy tần suất dữ liệu)
+candidate_timesteps = [14, 21, 24, 28, 30, 45, 48, 72, 96, 120, 168]
+
+def split_scale_for_timesteps(X_raw, y_raw, timesteps):
+    X_seq_raw, y_seq_raw = create_sequences(X_raw, y_raw, timesteps)
+    total_size = len(X_seq_raw)
+    train_size = int(total_size * 0.7)
+    val_size   = int(total_size * 0.15)
+
+    X_train_raw = X_seq_raw[:train_size]
+    y_train_raw = y_seq_raw[:train_size]
+    X_val_raw   = X_seq_raw[train_size:train_size+val_size]
+    y_val_raw   = y_seq_raw[train_size:train_size+val_size]
+    X_test_raw  = X_seq_raw[train_size+val_size:]
+    y_test_raw  = y_seq_raw[train_size+val_size:]
+
+    num_features = X_train_raw.shape[2]
+    scaler_X = MinMaxScaler()
+    X_train = scaler_X.fit_transform(X_train_raw.reshape(-1, num_features)).reshape(X_train_raw.shape)
+    X_val   = scaler_X.transform(X_val_raw.reshape(-1, num_features)).reshape(X_val_raw.shape)
+    X_test  = scaler_X.transform(X_test_raw.reshape(-1, num_features)).reshape(X_test_raw.shape)
+
+    scaler_y = MinMaxScaler()
+    y_train = scaler_y.fit_transform(y_train_raw)
+    y_val   = scaler_y.transform(y_val_raw)
+    y_test  = scaler_y.transform(y_test_raw)
+
+    return (X_train, y_train, X_val, y_val, X_test, y_test, scaler_X, scaler_y)
 
 def fitness(params):
     """
-    params: [units, dropout, batch_size, lr]
+    params: [units, dropout, batch_size, lr, timestep_idx]
     Trả về val_loss nhỏ nhất (cần minimize)
     """
     units     = int(params[0])
     dropout   = params[1]
     batch_sz  = int(params[2])
     lr        = params[3]
+    # map timestep index -> discrete candidates
+    idx_raw   = int(round(params[4]))
+    idx_clamped = max(0, min(len(candidate_timesteps)-1, idx_raw))
+    timesteps = candidate_timesteps[idx_clamped]
+
+    X_train, y_train, X_val, y_val, _, _, _, _ = split_scale_for_timesteps(X_raw, y_raw, timesteps)
 
     K.clear_session()
     model = create_lstm_model(units, dropout, lr,
                               input_shape=(X_train.shape[1], X_train.shape[2]))
-    es = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
+    es = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
 
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=20,                 # ít epoch để tìm nhanh
+        epochs=50,                 # tăng nhẹ epoch để đánh giá đủ tốt
         batch_size=batch_sz,
         verbose=0,
         callbacks=[es]
@@ -165,21 +182,27 @@ bounds = [
     (32, 256),    # units
     (0.1, 0.5),   # dropout
     (16, 64),     # batch size
-    (1e-4, 1e-2)  # learning rate
+    (1e-4, 1e-2), # learning rate
+    (0, len(candidate_timesteps)-1)  # index của timesteps rời rạc
 ]
 
 best_params, best_score = WOA(fitness, bounds, n_agents=5, max_iter=10)
 
 print("\n===== Kết quả tối ưu WOA =====")
-print("Best params (units, dropout, batch_size, lr):", best_params)
-print("Best val_loss:", best_score)
-
+print("Best raw params:", best_params)
 best_units    = int(best_params[0])
 best_dropout  = best_params[1]
 best_batch    = int(best_params[2])
 best_lr       = best_params[3]
+best_idx      = int(round(best_params[4]))
+best_idx      = max(0, min(len(candidate_timesteps)-1, best_idx))
+best_timesteps = candidate_timesteps[best_idx]
+print("Best (units, dropout, batch_size, lr, timesteps):", best_units, best_dropout, best_batch, best_lr, best_timesteps)
+print("Best val_loss:", best_score)
 
-# ======== 6. Train lại mô hình cuối cùng với tham số tối ưu ========
+# ======== 6. Train lại mô hình cuối cùng với tham số tối ưu (tạo lại split/scale theo timesteps tốt nhất) ========
+X_train, y_train, X_val, y_val, X_test, y_test, scaler_X, scaler_y = split_scale_for_timesteps(X_raw, y_raw, best_timesteps)
+
 final_model = create_lstm_model(best_units, best_dropout, best_lr,
                                 input_shape=(X_train.shape[1], X_train.shape[2]))
 es_final = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
