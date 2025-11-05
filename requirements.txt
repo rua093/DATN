@@ -18,3 +18,5 @@ lxml>=4.9.0
 python-dateutil>=2.8.0
 openpyxl>=3.1.0
 
+fastapi[standard]==0.113.0
+pydantic==2.8.0
