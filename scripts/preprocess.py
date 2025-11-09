@@ -42,12 +42,60 @@ def get_date_range(df: pd.DataFrame) -> Tuple[str, str]:
     return start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')
 
 
-def fetch_open_meteo_weather(start_date: str, end_date: str) -> pd.DataFrame:
-    # HCMC (10.8231, 106.6297). Lấy giờ địa phương để tránh lệch ngày.
+# Mapping location names to coordinates (latitude, longitude, timezone)
+LOCATION_COORDINATES = {
+    "Ho Chi Minh City": (10.8231, 106.6297, "Asia/Bangkok"),
+    "HCMC": (10.8231, 106.6297, "Asia/Bangkok"),
+    "Ho Chi Minh": (10.8231, 106.6297, "Asia/Bangkok"),
+    "Hà Nội": (21.0285, 105.8542, "Asia/Bangkok"),
+    "Hanoi": (21.0285, 105.8542, "Asia/Bangkok"),
+    "Ha Noi": (21.0285, 105.8542, "Asia/Bangkok"),
+    "Đà Nẵng": (16.0544, 108.2022, "Asia/Bangkok"),
+    "Da Nang": (16.0544, 108.2022, "Asia/Bangkok"),
+    "Cần Thơ": (10.0452, 105.7469, "Asia/Bangkok"),
+    "Can Tho": (10.0452, 105.7469, "Asia/Bangkok"),
+    "Hải Phòng": (20.8449, 106.6881, "Asia/Bangkok"),
+    "Hai Phong": (20.8449, 106.6881, "Asia/Bangkok"),
+}
+
+
+def get_location_coordinates(location: str) -> Tuple[float, float, str]:
+    """
+    Get coordinates for a location name.
+    Returns (latitude, longitude, timezone)
+    Defaults to Ho Chi Minh City if location not found.
+    """
+    location_normalized = location.strip()
+    # Try exact match first
+    if location_normalized in LOCATION_COORDINATES:
+        return LOCATION_COORDINATES[location_normalized]
+    # Try case-insensitive match
+    for key, coords in LOCATION_COORDINATES.items():
+        if key.lower() == location_normalized.lower():
+            return coords
+    # Default to Ho Chi Minh City
+    return LOCATION_COORDINATES["Ho Chi Minh City"]
+
+
+def fetch_open_meteo_weather(start_date: str, end_date: str, location: str = "Ho Chi Minh City") -> pd.DataFrame:
+    """
+    Fetch weather data from Open-Meteo API.
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        location: Location name (default: "Ho Chi Minh City")
+    
+    Returns:
+        DataFrame with columns: DATE_ONLY, TEMPERATURE_AVG, TEMPERATURE_MAX, HUMIDITY_AVG
+    """
+    latitude, longitude, timezone = get_location_coordinates(location)
+    timezone_encoded = timezone.replace("/", "%2F")
+    
     url = (
         "https://archive-api.open-meteo.com/v1/archive"
-        f"?latitude=10.8231&longitude=106.6297&start_date={start_date}&end_date={end_date}"
-        "&hourly=temperature_2m,relativehumidity_2m&timezone=Asia%2FBangkok"
+        f"?latitude={latitude}&longitude={longitude}&start_date={start_date}&end_date={end_date}"
+        f"&hourly=temperature_2m,relativehumidity_2m&timezone={timezone_encoded}"
     )
 
     resp = requests.get(url, timeout=60)

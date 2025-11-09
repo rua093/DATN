@@ -28,11 +28,14 @@ logger = logging.getLogger(__name__)
 
 class EVNCrawler:
     
-    def __init__(self, headless: bool = False, wait_timeout: int = 30):
-        self.wait_timeout = wait_timeout
+    def __init__(self, headless: bool = False, wait_timeout: int = 30, username: str = None, password: str = None):
+        self.wait_timeout = wait_timeout if wait_timeout >= 60 else 60  # Minimum 60 seconds
         self.driver = None
         self.headless = headless
         self.base_url = "https://www.evnhcmc.vn/"
+        # Store credentials if provided, otherwise use defaults
+        self.username = username if username else "0983716898"
+        self.password = password if password else "BacNLH#201103"
         
     def _setup_driver(self):
         try:
@@ -68,8 +71,8 @@ class EVNCrawler:
             raise
     
     def login(self) -> bool:
-        username = "0983716898"
-        password = "BacNLH#201103"
+        username = self.username
+        password = self.password
         
         try:
             if self.driver is None:
@@ -125,32 +128,45 @@ class EVNCrawler:
             logger.error(f"❌ Lỗi đăng nhập: {str(e)}")
             return False
     
-    def navigate_to_data_page(self):
+    def navigate_to_data_page(self, retry_count: int = 3):
+        """Navigate to data page by direct URL"""
+        data_page_url = "https://www.evnhcmc.vn/Tracuu/dienNangTieuThu"
+        
+        for attempt in range(retry_count):
         try:
+                # Điều hướng trực tiếp đến URL
+                self.driver.get(data_page_url)
+                time.sleep(3)  # Chờ trang load
+                
+                # Kiểm tra xem đã đến đúng trang chưa bằng cách kiểm tra URL hoặc element đặc trưng
             wait = WebDriverWait(self.driver, self.wait_timeout)
-            time.sleep(3)
-            
-            tracuu_button = wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//*[@id='c-app']/header/div[2]/div/div/div[2]/nav/ul/li[2]/a/div"))
-            )
-            tracuu_button.click()
-            time.sleep(1)
-            
-            dien_nang_button = wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//*[@id='c-app']/header/div[2]/div/div/div[2]/nav/ul/li[2]/div/div/div[2]/ul/a[1]"))
-            )
-            dien_nang_button.click()
-            time.sleep(3)
+                current_url = self.driver.current_url
+                
+                # Kiểm tra URL có chứa "dienNangTieuThu" hoặc "Tracuu"
+                if "dienNangTieuThu" in current_url or "Tracuu" in current_url:
+                    # Chờ một chút để đảm bảo trang đã load hoàn toàn
+                    time.sleep(2)
             return True
+                else:
+                    if attempt < retry_count - 1:
+                        time.sleep(5)
+                        continue
+                    else:
+                        return False
             
-        except TimeoutException:
-            logger.error("❌ Timeout điều hướng")
-            return False
-        except NoSuchElementException as e:
-            logger.error(f"❌ Không tìm thấy element: {str(e)}")
+            except TimeoutException as e:
+                if attempt < retry_count - 1:
+                    time.sleep(5)  # Wait before retry
+                    continue
+                else:
             return False
         except Exception as e:
-            logger.error(f"❌ Lỗi điều hướng: {str(e)}")
+                if attempt < retry_count - 1:
+                    time.sleep(5)
+                    continue
+                else:
+                    return False
+        
             return False
     
     def select_date_range(self, start_date: datetime, end_date: datetime) -> bool:
@@ -408,7 +424,6 @@ class EVNCrawler:
     
     def crawl_3_years_data(
         self,
-        output_file: str = "data/crawled_data_3years.xlsx",
         years_back: int = 3
     ) -> pd.DataFrame:
         now = datetime.now()
@@ -445,46 +460,12 @@ class EVNCrawler:
         df = df.sort_values('DATE_PARSED')
         df = df.drop(columns=['DATE_PARSED'])
         
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        
-        try:
-            if output_file.endswith('.xlsx'):
-                if error_records:
-                    df_errors = pd.DataFrame(error_records)
-                    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                        df.to_excel(writer, sheet_name='Data', index=False)
-                        df_errors.to_excel(writer, sheet_name='Errors', index=False)
-                    logger.info(f"✅ Đã lưu {len(df)} bản ghi thành công và {len(df_errors)} dòng lỗi vào {output_file}")
-                else:
-                    df.to_excel(output_file, index=False, engine='openpyxl')
-                    logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {output_file}")
-            else:
-                df.to_csv(output_file, index=False)
-                logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {output_file}")
-                if error_records:
-                    error_file = output_file.replace('.csv', '_errors.csv')
-                    df_errors = pd.DataFrame(error_records)
-                    df_errors.to_csv(error_file, index=False)
-                    logger.info(f"✅ Đã lưu {len(df_errors)} dòng lỗi vào {error_file}")
-        except PermissionError:
-            import datetime as dt
-            timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-            if output_file.endswith('.xlsx'):
-                backup_file = output_file.replace('.xlsx', f'_{timestamp}.xlsx')
-                df.to_excel(backup_file, index=False, engine='openpyxl')
-            else:
-                backup_file = output_file.replace('.csv', f'_{timestamp}.csv')
-                df.to_csv(backup_file, index=False)
-            logger.warning(f"⚠️ File gốc đang được mở, đã lưu vào: {backup_file}")
-            logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {backup_file}")
-        
         return df
     
     def crawl_date_range(
         self,
         start_date: datetime,
-        end_date: datetime,
-        output_file: str = "data/crawled_data_raw.xlsx"
+        end_date: datetime
     ) -> pd.DataFrame:
         if not self.navigate_to_data_page():
             logger.error("❌ Lỗi điều hướng")
@@ -514,39 +495,6 @@ class EVNCrawler:
         df = df.sort_values('DATE_PARSED')
         df = df.drop(columns=['DATE_PARSED'])
         
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        
-        try:
-            if output_file.endswith('.xlsx'):
-                if error_records:
-                    df_errors = pd.DataFrame(error_records)
-                    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                        df.to_excel(writer, sheet_name='Data', index=False)
-                        df_errors.to_excel(writer, sheet_name='Errors', index=False)
-                    logger.info(f"✅ Đã lưu {len(df)} bản ghi thành công và {len(df_errors)} dòng lỗi vào {output_file}")
-                else:
-                    df.to_excel(output_file, index=False, engine='openpyxl')
-                    logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {output_file}")
-            else:
-                df.to_csv(output_file, index=False)
-                logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {output_file}")
-                if error_records:
-                    error_file = output_file.replace('.csv', '_errors.csv')
-                    df_errors = pd.DataFrame(error_records)
-                    df_errors.to_csv(error_file, index=False)
-                    logger.info(f"✅ Đã lưu {len(df_errors)} dòng lỗi vào {error_file}")
-        except PermissionError:
-            import datetime as dt
-            timestamp = dt.datetime.now().strftime('%Y%m%d_%H%M%S')
-            if output_file.endswith('.xlsx'):
-                backup_file = output_file.replace('.xlsx', f'_{timestamp}.xlsx')
-                df.to_excel(backup_file, index=False, engine='openpyxl')
-            else:
-                backup_file = output_file.replace('.csv', f'_{timestamp}.csv')
-                df.to_csv(backup_file, index=False)
-            logger.warning(f"⚠️ File gốc đang được mở, đã lưu vào: {backup_file}")
-            logger.info(f"✅ Đã lưu {len(df)} bản ghi vào {backup_file}")
-        
         return df
     
     def close(self):
@@ -563,10 +511,7 @@ def main():
             logger.error("❌ Đăng nhập thất bại. Dừng crawler.")
             return
         
-        df = crawler.crawl_3_years_data(
-            output_file="data/crawled_data_3years.xlsx",
-            years_back=3
-        )
+        df = crawler.crawl_3_years_data(years_back=3)
         
         if not df.empty:
             logger.info(f"✅ Hoàn tất: {len(df)} bản ghi")
