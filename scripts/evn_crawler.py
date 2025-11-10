@@ -133,20 +133,20 @@ class EVNCrawler:
         data_page_url = "https://www.evnhcmc.vn/Tracuu/dienNangTieuThu"
         
         for attempt in range(retry_count):
-        try:
+            try:
                 # Điều hướng trực tiếp đến URL
                 self.driver.get(data_page_url)
                 time.sleep(3)  # Chờ trang load
                 
                 # Kiểm tra xem đã đến đúng trang chưa bằng cách kiểm tra URL hoặc element đặc trưng
-            wait = WebDriverWait(self.driver, self.wait_timeout)
+                wait = WebDriverWait(self.driver, self.wait_timeout)
                 current_url = self.driver.current_url
                 
                 # Kiểm tra URL có chứa "dienNangTieuThu" hoặc "Tracuu"
                 if "dienNangTieuThu" in current_url or "Tracuu" in current_url:
                     # Chờ một chút để đảm bảo trang đã load hoàn toàn
                     time.sleep(2)
-            return True
+                    return True
                 else:
                     if attempt < retry_count - 1:
                         time.sleep(5)
@@ -159,15 +159,15 @@ class EVNCrawler:
                     time.sleep(5)  # Wait before retry
                     continue
                 else:
-            return False
-        except Exception as e:
+                    return False
+            except Exception as e:
                 if attempt < retry_count - 1:
                     time.sleep(5)
                     continue
                 else:
                     return False
         
-            return False
+        return False
     
     def select_date_range(self, start_date: datetime, end_date: datetime) -> bool:
         try:

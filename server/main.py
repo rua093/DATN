@@ -26,11 +26,11 @@ init_db()
 def get_user_by_username(evn_username: str = Query(..., description="EVN username"), db: Session = Depends(get_db)) -> EvnAccount:
     """Get user by evn_username from query parameter"""
     user = get_account_by_username(db, evn_username)
-        if not user:
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
-        return user
+    return user
 
-async def handle_first_login(evn_username: str, evn_password: str):
+def handle_first_login(evn_username: str, evn_password: str):
     logger.info(f"🚀 handle_first_login được gọi cho user: {evn_username}")
     db = SessionLocal()
     job = None
@@ -39,14 +39,33 @@ async def handle_first_login(evn_username: str, evn_password: str):
         db.add(job)
         db.commit()
         logger.info(f"Bắt đầu thiết lập lần đầu cho người dùng {evn_username}")
+        # Tạo CrawlJob và cập nhật trạng thái theo tiến trình
+        crawl_job = CrawlJob(evn_username=evn_username, status="running")
+        db.add(crawl_job)
+        db.commit()
         crawler_service = CrawlerService(evn_username, evn_password)
         crawl_result = crawler_service.crawl_initial_data(evn_username, years_back=3)
         if not crawl_result["success"]:
+            if crawl_job:
+                crawl_job.status = "failed"
+                crawl_job.error_message = crawl_result.get("error")
+                crawl_job.completed_at = datetime.utcnow()
+                db.commit()
             if job:
                 job.status = "failed"
                 job.error_message = f"Crawl thất bại: {crawl_result.get('error')}"
                 db.commit()
+            acc = get_account_by_username(db, evn_username)
+            if acc:
+                acc.crawl_status = "failed"
+                db.commit()
             return
+        else:
+            if crawl_job:
+                crawl_job.status = "completed"
+                crawl_job.completed_at = datetime.utcnow()
+                crawl_job.records_crawled = crawl_result.get("records")
+                db.commit()
         training_service = TrainingService()
         train_result = training_service.train_model(
             evn_username, db,
@@ -56,6 +75,10 @@ async def handle_first_login(evn_username: str, evn_password: str):
             if job:
                 job.status = "failed"
                 job.error_message = f"Train thất bại: {train_result.get('error')}"
+                db.commit()
+            acc = get_account_by_username(db, evn_username)
+            if acc:
+                acc.crawl_status = "failed"
                 db.commit()
             return
         model = create_model(
@@ -81,6 +104,20 @@ async def handle_first_login(evn_username: str, evn_password: str):
                 job.status = "failed"
                 job.error_message = str(e)
                 db.commit()
+            # đánh dấu crawl job gần nhất là failed nếu có
+            try:
+                last_crawl = db.query(CrawlJob).filter(CrawlJob.evn_username == evn_username).order_by(CrawlJob.started_at.desc()).first()
+                if last_crawl and last_crawl.status == "running":
+                    last_crawl.status = "failed"
+                    last_crawl.error_message = str(e)
+                    last_crawl.completed_at = datetime.utcnow()
+                    db.commit()
+            except Exception:
+                pass
+            acc = get_account_by_username(db, evn_username)
+            if acc:
+                acc.crawl_status = "failed"
+                db.commit()
         except Exception as e2:
             logger.error(f"Lỗi khi cập nhật job status: {str(e2)}", exc_info=True)
     finally:
@@ -101,40 +138,17 @@ class AuthLoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def auth_login(request: AuthLoginRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
-    # hot verification against EVN
-    crawler = CrawlerService(request.evn_username, request.evn_password)
-    try:
-        ok = crawler.crawler is None  # ensure construction
-        # use only login check
-        crawler.crawler = None
-        crawler.crawler = None
-        evn = CrawlerService(request.evn_username, request.evn_password)
-        evn.crawler = None
-        # direct check
-        from scripts.evn_crawler import EVNCrawler
-        bot = EVNCrawler(headless=True, username=request.evn_username, password=request.evn_password)
-        success = bot.login()
-        bot.close()
-        if not success:
-            raise HTTPException(status_code=401, detail="EVN login failed")
-    except Exception:
-        # attempt graceful close
-        try:
-            bot.close()
-        except Exception:
-            pass
-        raise HTTPException(status_code=401, detail="EVN login failed")
-
     user = get_account_by_username(db, request.evn_username)
     if not user:
         # User mới: tạo account và crawl + train
         user = create_account(db=db, evn_username=request.evn_username, evn_password=request.evn_password, location=request.location)
+        user.crawl_status = "pending"
         db.commit()
         background_tasks.add_task(handle_first_login, request.evn_username, request.evn_password)
         return {"status": "pending", "message": "Xác thực thành công. Đang xử lý dữ liệu..."}
     
     # User đã tồn tại: cập nhật password và location
-    from server.database import update_account_password
+    password_changed = user.evn_password != request.evn_password
     update_account_password(db, request.evn_username, request.evn_password)
     if request.location:
         user.location = request.location
@@ -142,6 +156,12 @@ async def auth_login(request: AuthLoginRequest, background_tasks: BackgroundTask
     
     # Refresh user từ DB để lấy crawl_status mới nhất
     db.refresh(user)
+
+    if password_changed:
+        user.crawl_status = "pending"
+        db.commit()
+        background_tasks.add_task(handle_first_login, request.evn_username, request.evn_password)
+        return {"status": "pending", "message": "Mật khẩu đã thay đổi. Đang xác thực lại dữ liệu..."}
     
     # Kiểm tra xem đã có model và crawl_status = "success" chưa
     active_model = get_active_model(db, user.evn_username)
@@ -152,6 +172,9 @@ async def auth_login(request: AuthLoginRequest, background_tasks: BackgroundTask
     if not active_model or crawl_status != "success":
         # Chưa có model hoặc crawl_status chưa success → crawl lại
         logger.info(f"User {request.evn_username} chưa có model hoặc crawl_status != success, bắt đầu crawl lại...")
+        if crawl_status != "pending":
+            user.crawl_status = "pending"
+            db.commit()
         background_tasks.add_task(handle_first_login, request.evn_username, request.evn_password)
         return {"status": "pending", "message": "Đang crawl và train lại dữ liệu..."}
     
