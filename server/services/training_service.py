@@ -54,6 +54,28 @@ class TrainingService:
         X = data.values
         return X, y
     
+    def preprocess_for_base_model(self, df: pd.DataFrame):
+        data = df.copy()
+        if "DATE" in data.columns:
+            data = data.drop(columns=["DATE"])
+        if "TEMPERATURE_MAX" in data.columns:
+            data = data.drop(columns=["TEMPERATURE_MAX"])
+        if "MONTH" in data.columns:
+            data["month_sin"] = np.sin(2 * np.pi * data["MONTH"] / 12)
+            data["month_cos"] = np.cos(2 * np.pi * data["MONTH"] / 12)
+            data = data.drop(columns=["MONTH"])
+        if "WEEKDAY" in data.columns:
+            data["weekday_sin"] = np.sin(2 * np.pi * data["WEEKDAY"] / 7)
+            data["weekday_cos"] = np.cos(2 * np.pi * data["WEEKDAY"] / 7)
+            data = data.drop(columns=["WEEKDAY"])
+        if "DAY" in data.columns:
+            data = data.drop(columns=["DAY"])
+        target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in data.columns else "ENERGY"
+        cols = [c for c in data.columns if c != target_col] + [target_col]
+        data = data[cols]
+        
+        return data
+    
     def create_sequences(self, X, y, timesteps=24):
         Xs, ys = [], []
         for i in range(len(X) - timesteps):
@@ -172,6 +194,57 @@ class TrainingService:
             logger.warning(f"Không thể lưu biểu đồ hội tụ WOA: {str(e)}")
         return best_pos, best_score
     
+    def _handle_accumulated_energy(
+        self, 
+        energy_series: pd.Series, 
+        rolling_med: pd.Series, 
+        rolling_mean: pd.Series,
+        energy_nonzero: pd.Series
+    ) -> pd.Series:
+        energy_adj = energy_series.copy()
+        n = len(energy_adj)
+        
+        # Tính global median để dùng khi thiếu dữ liệu
+        global_med = energy_nonzero.median()
+        if pd.isna(global_med):
+            global_med = energy_series.median()
+        
+        # Duyệt qua từng ngày để phát hiện và xử lý
+        i = 0
+        while i < n:
+            if energy_adj.iloc[i] > 0:  # Ngày có tín hiệu
+                # Đếm số ngày mất tín hiệu liên tiếp trước đó
+                zero_count = 0
+                j = i - 1
+                while j >= 0 and energy_series.iloc[j] == 0:
+                    zero_count += 1
+                    j -= 1
+                
+                # Nếu có ngày mất tín hiệu trước đó → chắc chắn là cộng dồn, luôn phân bổ lại
+                if zero_count > 0:
+                    current_value = energy_adj.iloc[i]
+                    
+                    # Chia đều toàn bộ giá trị cho tất cả các ngày (bao gồm cả ngày có điện)
+                    total_days = zero_count + 1  # Số ngày mất tín hiệu + 1 ngày có điện
+                    energy_per_day = current_value / total_days
+                    
+                    # Phân bổ đều cho tất cả các ngày
+                    for k in range(i - zero_count, i + 1):  # Bao gồm cả ngày hiện tại
+                        if k >= 0:
+                            energy_adj.iloc[k] = energy_per_day
+                    
+                    logger.debug(
+                        f"Đã phân bổ lại năng lượng: {total_days} ngày (bao gồm {zero_count} ngày mất tín hiệu) "
+                        f"nhận {energy_per_day:.2f} kWh mỗi ngày từ tổng {current_value:.2f} kWh"
+                    )
+            i += 1
+        
+        # Xử lý các ngày còn lại có ENERGY = 0 (không được phân bổ)
+        energy_adj.loc[energy_adj == 0] = rolling_med.loc[energy_adj == 0]
+        energy_adj = energy_adj.fillna(global_med if pd.notna(global_med) else energy_series.median())
+        
+        return energy_adj
+    
     def build_dataset_from_db(self, db: Session, evn_username: str, location: str) -> pd.DataFrame:
         raw_df = load_consumption_dataframe(db, evn_username)
         if raw_df.empty:
@@ -195,6 +268,10 @@ class TrainingService:
                 if isinstance(weather_db['DATE_ONLY'].iloc[0], str):
                     weather_db['DATE_ONLY'] = pd.to_datetime(weather_db['DATE_ONLY']).dt.date
             weather_daily = weather_db
+        if 'DATE_ONLY' in weather_daily.columns:
+            weather_daily = weather_daily.drop_duplicates(subset=['DATE_ONLY'])
+        elif 'date' in weather_daily.columns:
+            weather_daily = weather_daily.drop_duplicates(subset=['date'])
         merged = pd.merge(raw_df, weather_daily, on='DATE_ONLY', how='left')
         merged = add_holiday_and_calendar_cols(merged)
         merged = merged.sort_values('DATE_PARSED').reset_index(drop=True)
@@ -209,15 +286,18 @@ class TrainingService:
         # Đảm bảo energy_nonzero là numeric trước khi tính rolling median
         energy_nonzero = pd.to_numeric(energy_nonzero, errors='coerce')
         rolling_med = energy_nonzero.rolling(window=14, min_periods=3).median()
-        energy_adj = energy_series.copy()
-        energy_adj.loc[energy_adj == 0] = rolling_med.loc[energy_adj == 0]
-        global_med = energy_nonzero.median()
-        energy_adj = energy_adj.fillna(global_med if pd.notna(global_med) else energy_series.median())
+        rolling_mean = energy_nonzero.rolling(window=14, min_periods=3).mean()
+        
+        # Xử lý giá trị cao bất thường do cộng dồn từ các ngày mất tín hiệu
+        energy_adj = self._handle_accumulated_energy(
+            energy_series, rolling_med, rolling_mean, energy_nonzero
+        )
+        
         merged['ENERGY_ADJ'] = energy_adj
         final_cols = [
-            'DATE', 'ENERGY', 'ENERGY_ZERO_FLAG', 'ENERGY_ADJ',
+            'DATE', 'ENERGY_ADJ',
             'TEMPERATURE_AVG', 'TEMPERATURE_MAX', 'HUMIDITY_AVG',
-            'HOLIDAY', 'MONTH', 'DAY', 'WEEKDAY', 'TIME_INDEX'
+            'HOLIDAY', 'MONTH', 'DAY', 'WEEKDAY'
         ]
         existing = [c for c in final_cols if c in merged.columns]
         merged = merged[existing]
@@ -236,9 +316,30 @@ class TrainingService:
             logger.info(f"Đã lưu {inserted} dòng thời tiết vào daily_weather cho '{location}'")
         return merged
     
-    def train_model(self, evn_username: str, db: Session, use_woa: bool = True, woa_n_agents: int = 5, woa_max_iter: int = 10) -> dict:
+    def train_model(
+        self, 
+        evn_username: str, 
+        db: Session, 
+        use_woa: bool = True, 
+        woa_n_agents: int = 5, 
+        woa_max_iter: int = 10,
+        use_fine_tune: bool = True,
+        fine_tune_lr: float = 0.0001,
+        fine_tune_epochs: int = 30
+    ) -> dict:
         try:
-            logger.info(f"Bắt đầu train model cho {evn_username} (use_woa={use_woa})")
+            # Nếu dùng fine-tuning, gọi phương thức fine-tuning
+            if use_fine_tune:
+                logger.info(f"Bắt đầu fine-tune từ base model cho {evn_username}")
+                return self.fine_tune_from_base_model(
+                    evn_username=evn_username,
+                    db=db,
+                    fine_tune_lr=fine_tune_lr,
+                    epochs=fine_tune_epochs
+                )
+            
+            # Nếu không dùng fine-tuning, train từ đầu (logic cũ)
+            logger.info(f"Bắt đầu train model từ đầu cho {evn_username} (use_woa={use_woa})")
             acc = get_account_by_username(db, evn_username)
             if not acc:
                 return {"success": False, "error": f"Không tìm thấy tài khoản {evn_username}"}
@@ -292,6 +393,152 @@ class TrainingService:
             return {"success": True, "model_path": str(model_path), "scaler_x_path": str(scaler_x_path), "scaler_y_path": str(scaler_y_path), "metrics": metrics, "training_params": training_params}
         except Exception as e:
             logger.error(f"Lỗi trong train_model: {str(e)}", exc_info=True)
+            return {"success": False, "error": str(e)}
+        finally:
+            K.clear_session()
+    
+    def fine_tune_from_base_model(
+        self, 
+        evn_username: str, 
+        db: Session,
+        base_model_path: Path = None,
+        fine_tune_lr: float = 0.0001,
+        epochs: int = 30,
+        batch_size: int = 32,
+        patience: int = 10
+    ) -> dict:
+        try:
+            logger.info(f"Bắt đầu fine-tune từ base model cho {evn_username}")
+            
+            if base_model_path is None:
+                base_model_path = BASE_DIR / "models" / "woa_lstm_final.keras"
+            if not base_model_path.exists():
+                return {"success": False, "error": f"Không tìm thấy base model tại {base_model_path}"}
+            logger.info(f"Đang load base model từ {base_model_path}")
+            base_model = tf.keras.models.load_model(str(base_model_path), compile=False)
+            
+            acc = get_account_by_username(db, evn_username)
+            if not acc:
+                return {"success": False, "error": f"Không tìm thấy tài khoản {evn_username}"}
+            location = acc.location if acc.location else "Ho Chi Minh City"
+            df = self.build_dataset_from_db(db, evn_username, location)
+            logger.info(f"Đã tải {len(df)} bản ghi cho user {evn_username}")
+            
+            if 'DATE' in df.columns:
+                df['DATE'] = pd.to_datetime(df['DATE'], dayfirst=True)
+                df = df.set_index('DATE')
+            
+            split_idx = int(len(df) * 0.8)
+            train_df = df.iloc[:split_idx].copy()
+            test_df = df.iloc[split_idx:].copy()
+            target_col = "ENERGY_ADJ" if "ENERGY_ADJ" in train_df.columns else "ENERGY"
+            train_df[target_col] = train_df[target_col].apply(lambda x: np.nan if x < 0.1 else x)
+            train_df[target_col] = train_df[target_col].interpolate(method='time')
+            p99 = train_df[target_col].quantile(0.99)
+            train_df[target_col] = train_df[target_col].clip(upper=p99)
+            test_df[target_col] = test_df[target_col].apply(lambda x: np.nan if x < 0.1 else x)
+            test_df[target_col] = test_df[target_col].ffill()
+            test_df[target_col] = test_df[target_col].fillna(train_df[target_col].iloc[-1])
+            
+            train_df_processed = self.preprocess_for_base_model(train_df.reset_index())
+            test_df_processed = self.preprocess_for_base_model(test_df.reset_index())
+            n_features_expected = base_model.input_shape[2]
+            n_features_actual = len(train_df_processed.columns)
+            if n_features_actual != n_features_expected:
+                logger.warning(f"Số features không khớp: expected {n_features_expected}, actual {n_features_actual}.")
+            TIME_STEPS = 7
+            if len(train_df_processed) < TIME_STEPS + 1:
+                return {"success": False, "error": f"Không đủ dữ liệu. Cần ít nhất {TIME_STEPS + 1} mẫu, hiện có {len(train_df_processed)}"}
+            
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            train_scaled = scaler.fit_transform(train_df_processed)
+            test_scaled = scaler.transform(test_df_processed)
+            def create_sequences(data, time_steps):
+                X, y = [], []
+                for i in range(len(data) - time_steps):
+                    X.append(data[i:(i + time_steps), :])
+                    y.append(data[i + time_steps, -1])
+                return np.array(X), np.array(y)
+            X_train, y_train = create_sequences(train_scaled, TIME_STEPS)
+            X_test, y_test = create_sequences(test_scaled, TIME_STEPS)
+            val_size = int(len(X_train) * 0.2)
+            X_val = X_train[-val_size:]
+            y_val = y_train[-val_size:]
+            X_train = X_train[:-val_size]
+            y_train = y_train[:-val_size]
+            
+            logger.info(f"Dữ liệu đã sẵn sàng: Train={X_train.shape}, Val={X_val.shape}, Test={X_test.shape}")
+            if X_train.shape[1] != base_model.input_shape[1] or X_train.shape[2] != base_model.input_shape[2]:
+                return {"success": False, "error": f"Input shape không khớp: model expects {base_model.input_shape[1:]}, got {X_train.shape[1:]}"}
+            
+            K.clear_session()
+            fine_tuned_model = tf.keras.models.clone_model(base_model)
+            fine_tuned_model.set_weights(base_model.get_weights())
+            fine_tuned_model.compile(optimizer=Adam(learning_rate=fine_tune_lr), loss='mse')
+            es = EarlyStopping(monitor='val_loss', patience=patience, restore_best_weights=True, verbose=1)
+            
+            logger.info(f"Bắt đầu fine-tuning với lr={fine_tune_lr}, epochs={epochs}")
+            history = fine_tuned_model.fit(
+                X_train, y_train,
+                validation_data=(X_val, y_val),
+                epochs=epochs,
+                batch_size=batch_size,
+                callbacks=[es],
+                verbose=1
+            )
+            
+            y_pred_scaled = fine_tuned_model.predict(X_test, verbose=0)
+            def inverse_target(pred, scaler, n_features):
+                dummy = np.zeros((len(pred), n_features + 1))
+                dummy[:, -1] = pred.flatten()
+                return scaler.inverse_transform(dummy)[:, -1]
+            n_feat = X_train.shape[2] - 1
+            y_true = inverse_target(y_test, scaler, n_feat)
+            y_pred = inverse_target(y_pred_scaled, scaler, n_feat)
+            mae = mean_absolute_error(y_true, y_pred)
+            mse = mean_squared_error(y_true, y_pred)
+            rmse = np.sqrt(mse)
+            r2 = r2_score(y_true, y_pred)
+            mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
+            
+            metrics = {
+                "mae": float(mae),
+                "mse": float(mse),
+                "rmse": float(rmse),
+                "r2": float(r2),
+                "mape": float(mape)
+            }
+            
+            model_dir = MODELS_DIR / f"user_{evn_username}"
+            model_dir.mkdir(parents=True, exist_ok=True)
+            model_path = model_dir / "lstm_model.h5"
+            scaler_path = model_dir / "scaler_x.pkl"
+            scaler_y_path = model_dir / "scaler_y.pkl"
+            fine_tuned_model.save(str(model_path))
+            joblib.dump(scaler, scaler_path)
+            joblib.dump(scaler, scaler_y_path)
+            
+            logger.info(f"Fine-tuning hoàn tất. Metrics: {metrics}")
+            logger.info(f"Model đã lưu tại: {model_path}")
+            
+            return {
+                "success": True,
+                "model_path": str(model_path),
+                "scaler_x_path": str(scaler_path),
+                "scaler_y_path": str(scaler_y_path),
+                "metrics": metrics,
+                "training_params": {
+                    "method": "fine_tune_from_base",
+                    "base_model": str(base_model_path),
+                    "fine_tune_lr": fine_tune_lr,
+                    "epochs": epochs,
+                    "batch_size": batch_size,
+                    "timesteps": TIME_STEPS
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Lỗi trong fine_tune_from_base_model: {str(e)}", exc_info=True)
             return {"success": False, "error": str(e)}
         finally:
             K.clear_session()

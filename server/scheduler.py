@@ -17,7 +17,8 @@ from server.services.crawler_service import CrawlerService
 from server.services.training_service import TrainingService
 from server.config import (
     CRAWLER_DAILY_TIME, RETRAIN_YEARLY_DAY, RETRAIN_YEARLY_MONTH, RETRAIN_YEARLY_TIME,
-    YEARS_BACK_FOR_TRAINING, USE_WOA_BY_DEFAULT, WOA_N_AGENTS, WOA_MAX_ITER
+    YEARS_BACK_FOR_TRAINING, USE_WOA_BY_DEFAULT, WOA_N_AGENTS, WOA_MAX_ITER,
+    USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
 )
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,15 @@ def yearly_retrain_task():
                     db.commit()
                 continue
             training_service = TrainingService()
-            train_result = training_service.train_model(user.evn_username, db, use_woa=USE_WOA_BY_DEFAULT, woa_n_agents=WOA_N_AGENTS, woa_max_iter=WOA_MAX_ITER)
+            train_result = training_service.train_model(
+                user.evn_username, db,
+                use_woa=USE_WOA_BY_DEFAULT,
+                woa_n_agents=WOA_N_AGENTS,
+                woa_max_iter=WOA_MAX_ITER,
+                use_fine_tune=USE_FINE_TUNE_BY_DEFAULT,
+                fine_tune_lr=FINE_TUNE_LR,
+                fine_tune_epochs=FINE_TUNE_EPOCHS
+            )
             if not train_result["success"]:
                 if job:
                     job.status = "failed"

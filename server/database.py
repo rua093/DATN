@@ -218,9 +218,40 @@ def save_daily_weather_rows(db: Session, location: str, rows: list[dict]) -> int
                 continue
         if not mappings:
             return 0
-        db.bulk_insert_mappings(DailyWeather, mappings)
+        # loại duplicate trong batch theo date
+        seen_dates = set()
+        unique_mappings = []
+        dup_in_batch = 0
+        for m in mappings:
+            d = m["date"]
+            if d in seen_dates:
+                dup_in_batch += 1
+                continue
+            seen_dates.add(d)
+            unique_mappings.append(m)
+        if dup_in_batch > 0:
+            logger.info(f"save_daily_weather_rows: bỏ {dup_in_batch} dòng duplicate trong batch cho '{location}'")
+
+        if not unique_mappings:
+            return 0
+
+        # loại ngày đã tồn tại trong DB
+        existing = db.query(DailyWeather.date).filter(
+            DailyWeather.location == location,
+            DailyWeather.date.in_([m["date"] for m in unique_mappings])
+        ).all()
+        existing_dates = {r.date for r in existing}
+        new_rows = [m for m in unique_mappings if m["date"] not in existing_dates]
+        skipped_existing = len(unique_mappings) - len(new_rows)
+        if skipped_existing > 0:
+            logger.info(f"save_daily_weather_rows: bỏ {skipped_existing} dòng do đã tồn tại trong DB cho '{location}'")
+
+        if not new_rows:
+            return 0
+
+        db.bulk_insert_mappings(DailyWeather, new_rows)
         db.commit()
-        inserted = len(mappings)
+        inserted = len(new_rows)
         logger.info(f"Đã lưu batch {inserted} dòng vào daily_weather cho '{location}'")
         return inserted
     except IntegrityError as e:

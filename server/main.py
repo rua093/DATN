@@ -14,7 +14,10 @@ from server.database import (
 )
 from server.services.crawler_service import CrawlerService
 from server.services.training_service import TrainingService
-from server.config import MODELS_DIR, USE_WOA_BY_DEFAULT, WOA_N_AGENTS, WOA_MAX_ITER
+from server.config import (
+    MODELS_DIR, USE_WOA_BY_DEFAULT, WOA_N_AGENTS, WOA_MAX_ITER,
+    USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
+)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -69,7 +72,12 @@ def handle_first_login(evn_username: str, evn_password: str):
         training_service = TrainingService()
         train_result = training_service.train_model(
             evn_username, db,
-            use_woa=USE_WOA_BY_DEFAULT, woa_n_agents=WOA_N_AGENTS, woa_max_iter=WOA_MAX_ITER
+            use_woa=USE_WOA_BY_DEFAULT, 
+            woa_n_agents=WOA_N_AGENTS, 
+            woa_max_iter=WOA_MAX_ITER,
+            use_fine_tune=USE_FINE_TUNE_BY_DEFAULT,
+            fine_tune_lr=FINE_TUNE_LR,
+            fine_tune_epochs=FINE_TUNE_EPOCHS
         )
         if not train_result["success"]:
             if job:
@@ -249,29 +257,31 @@ async def get_forecast(user: EvnAccount = Depends(get_user_by_username), db: Ses
     if not acc:
         raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
     location = acc.location if acc.location else "Ho Chi Minh City"
+    import tensorflow as tf
+    model = tf.keras.models.load_model(model_path, compile=False)
+    timesteps = model.input_shape[1]
+    scaler = joblib.load(sx_path)
+    scaler_y = joblib.load(sy_path)
     ts = TrainingService()
     df = ts.build_dataset_from_db(db, user.evn_username, location)
     if df.empty:
         raise HTTPException(status_code=404, detail="Không có dữ liệu để dự báo")
-    X_raw, y_raw = ts.preprocess_for_lstm(df)
-    timesteps = 24
-    if len(X_raw) < timesteps + 1:
-        raise HTTPException(status_code=400, detail="Không đủ dữ liệu để dự báo")
-    window = X_raw[-timesteps:]
-    import tensorflow as tf
-    model = tf.keras.models.load_model(model_path)
-    scaler_y = joblib.load(sy_path)
-    preds = []
-    cur_window = window.copy()
-    for _ in range(1):
-        x_in = np.expand_dims(cur_window, axis=0)
-        y_hat_scaled = model.predict(x_in, verbose=0)
-        y_hat = scaler_y.inverse_transform(y_hat_scaled)[0, 0]
-        preds.append(float(y_hat))
-        next_feat = cur_window[-1].copy()
-        next_feat[0] = y_hat_scaled[0, 0]
-        cur_window = np.vstack([cur_window[1:], next_feat])
-    return {"horizon": 1, "unit": "days", "predictions": preds}
+    if timesteps == 7:
+        df_processed = ts.preprocess_for_base_model(df)
+    else:
+        X_raw, y_raw = ts.preprocess_for_lstm(df)
+        df_processed = pd.DataFrame(X_raw)
+    if len(df_processed) < timesteps + 1:
+        raise HTTPException(status_code=400, detail=f"Không đủ dữ liệu để dự báo. Cần ít nhất {timesteps + 1} mẫu")
+    window = df_processed.iloc[-timesteps:].values
+    window_scaled = scaler.transform(window)
+    x_in = np.expand_dims(window_scaled, axis=0)
+    y_hat_scaled = model.predict(x_in, verbose=0)
+    n_feat = window_scaled.shape[1] - 1
+    dummy = np.zeros((1, n_feat + 1))
+    dummy[0, -1] = y_hat_scaled[0, 0]
+    y_hat = scaler.inverse_transform(dummy)[0, -1]
+    return {"horizon": 1, "unit": "days", "predictions": [float(y_hat)]}
 
 # History from MySQL (paged)
 @app.get("/api/data/history/db")

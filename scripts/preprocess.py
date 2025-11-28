@@ -153,6 +153,61 @@ def add_holiday_and_calendar_cols(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def handle_accumulated_energy(
+    energy_series: pd.Series, 
+    rolling_med: pd.Series, 
+    rolling_mean: pd.Series,
+    energy_nonzero: pd.Series
+) -> pd.Series:
+    """
+    Xử lý giá trị cộng dồn từ các ngày mất tín hiệu.
+    
+    Logic:
+    1. Nếu một ngày có ENERGY > 0 sau chuỗi ngày mất tín hiệu (ENERGY = 0),
+       chắc chắn giá trị đó là cộng dồn → luôn phân bổ lại
+    2. Chia đều toàn bộ giá trị ngày có điện cho tất cả các ngày 
+       (bao gồm cả ngày có điện và các ngày mất tín hiệu trước đó)
+    """
+    energy_adj = energy_series.copy()
+    n = len(energy_adj)
+    
+    # Tính global median để dùng khi thiếu dữ liệu
+    global_med = energy_nonzero.median()
+    if pd.isna(global_med):
+        global_med = energy_series.median()
+    
+    # Duyệt qua từng ngày để phát hiện và xử lý
+    i = 0
+    while i < n:
+        if energy_adj.iloc[i] > 0:  # Ngày có tín hiệu
+            # Đếm số ngày mất tín hiệu liên tiếp trước đó
+            zero_count = 0
+            j = i - 1
+            while j >= 0 and energy_series.iloc[j] == 0:
+                zero_count += 1
+                j -= 1
+            
+            # Nếu có ngày mất tín hiệu trước đó → chắc chắn là cộng dồn, luôn phân bổ lại
+            if zero_count > 0:
+                current_value = energy_adj.iloc[i]
+                
+                # Chia đều toàn bộ giá trị cho tất cả các ngày (bao gồm cả ngày có điện)
+                total_days = zero_count + 1  # Số ngày mất tín hiệu + 1 ngày có điện
+                energy_per_day = current_value / total_days
+                
+                # Phân bổ đều cho tất cả các ngày
+                for k in range(i - zero_count, i + 1):  # Bao gồm cả ngày hiện tại
+                    if k >= 0:
+                        energy_adj.iloc[k] = energy_per_day
+        i += 1
+    
+    # Xử lý các ngày còn lại có ENERGY = 0 (không được phân bổ)
+    energy_adj.loc[energy_adj == 0] = rolling_med.loc[energy_adj == 0]
+    energy_adj = energy_adj.fillna(global_med if pd.notna(global_med) else energy_series.median())
+    
+    return energy_adj
+
+
 def build_dataset(input_path: str, output_path: str) -> pd.DataFrame:
     raw_df = load_raw_data(input_path)
     start_date, end_date = get_date_range(raw_df)
@@ -175,16 +230,18 @@ def build_dataset(input_path: str, output_path: str) -> pd.DataFrame:
     energy_series = merged['ENERGY'].copy()
     energy_nonzero = energy_series.replace(0, pd.NA)
     rolling_med = energy_nonzero.rolling(window=14, min_periods=3).median()
-    energy_adj = energy_series.copy()
-    energy_adj.loc[energy_adj == 0] = rolling_med.loc[energy_adj == 0]
-    # Fallback: nếu vẫn NaN (đầu chuỗi), dùng median toàn cục (bỏ 0)
-    global_med = energy_nonzero.median()
-    energy_adj = energy_adj.fillna(global_med if pd.notna(global_med) else energy_series.median())
+    rolling_mean = energy_nonzero.rolling(window=14, min_periods=3).mean()
+    
+    # Xử lý giá trị cao bất thường do cộng dồn từ các ngày mất tín hiệu
+    energy_adj = handle_accumulated_energy(
+        energy_series, rolling_med, rolling_mean, energy_nonzero
+    )
+    
     merged['ENERGY_ADJ'] = energy_adj
 
     # Sắp xếp, cột cuối cùng
     final_cols = [
-        'DATE', 'ENERGY', 'ENERGY_ZERO_FLAG', 'ENERGY_ADJ',
+        'DATE', 'ENERGY_ADJ',
         'TEMPERATURE_AVG', 'TEMPERATURE_MAX', 'HUMIDITY_AVG',
         'HOLIDAY', 'MONTH', 'DAY', 'WEEKDAY', 'TIME_INDEX'
     ]
