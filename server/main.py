@@ -15,8 +15,7 @@ from server.database import (
 from server.services.crawler_service import CrawlerService
 from server.services.training_service import TrainingService
 from server.config import (
-    MODELS_DIR, USE_WOA_BY_DEFAULT, WOA_N_AGENTS, WOA_MAX_ITER,
-    USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
+    MODELS_DIR, USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -72,10 +71,6 @@ def handle_first_login(evn_username: str, evn_password: str):
         training_service = TrainingService()
         train_result = training_service.train_model(
             evn_username, db,
-            use_woa=USE_WOA_BY_DEFAULT, 
-            woa_n_agents=WOA_N_AGENTS, 
-            woa_max_iter=WOA_MAX_ITER,
-            use_fine_tune=USE_FINE_TUNE_BY_DEFAULT,
             fine_tune_lr=FINE_TUNE_LR,
             fine_tune_epochs=FINE_TUNE_EPOCHS
         )
@@ -259,18 +254,13 @@ async def get_forecast(user: EvnAccount = Depends(get_user_by_username), db: Ses
     location = acc.location if acc.location else "Ho Chi Minh City"
     import tensorflow as tf
     model = tf.keras.models.load_model(model_path, compile=False)
-    timesteps = model.input_shape[1]
+    timesteps = 7
     scaler = joblib.load(sx_path)
-    scaler_y = joblib.load(sy_path)
     ts = TrainingService()
     df = ts.build_dataset_from_db(db, user.evn_username, location)
     if df.empty:
         raise HTTPException(status_code=404, detail="Không có dữ liệu để dự báo")
-    if timesteps == 7:
-        df_processed = ts.preprocess_for_base_model(df)
-    else:
-        X_raw, y_raw = ts.preprocess_for_lstm(df)
-        df_processed = pd.DataFrame(X_raw)
+    df_processed = ts.preprocess_for_base_model(df)
     if len(df_processed) < timesteps + 1:
         raise HTTPException(status_code=400, detail=f"Không đủ dữ liệu để dự báo. Cần ít nhất {timesteps + 1} mẫu")
     window = df_processed.iloc[-timesteps:].values

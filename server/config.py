@@ -29,12 +29,6 @@ RETRAIN_YEARLY_TIME = "03:00"
 
 YEARS_BACK_FOR_TRAINING = 3
 
-USE_WOA_BY_DEFAULT = True
-WOA_N_AGENTS = 5
-WOA_MAX_ITER = 10
-
-# Fine-tuning từ base model (mặc định: True)
-USE_FINE_TUNE_BY_DEFAULT = True
-FINE_TUNE_LR = 0.0001  # Learning rate cho fine-tuning (thấp hơn base model)
+FINE_TUNE_LR = 0.0001
 FINE_TUNE_EPOCHS = 30  # Số epochs cho fine-tuning
 
