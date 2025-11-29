@@ -29,6 +29,7 @@ RETRAIN_YEARLY_TIME = "03:00"
 
 YEARS_BACK_FOR_TRAINING = 3
 
-FINE_TUNE_LR = 0.0001
+FINE_TUNE_LR = 0.00001  # Giảm learning rate để tránh "quên" kiến thức từ base model
 FINE_TUNE_EPOCHS = 30  # Số epochs cho fine-tuning
+FINE_TUNE_MIN_SAMPLES = 100  # Số mẫu tối thiểu để fine-tune hiệu quả
 

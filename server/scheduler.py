@@ -17,7 +17,7 @@ from server.services.crawler_service import CrawlerService
 from server.services.training_service import TrainingService
 from server.config import (
     CRAWLER_DAILY_TIME, RETRAIN_YEARLY_DAY, RETRAIN_YEARLY_MONTH, RETRAIN_YEARLY_TIME,
-    YEARS_BACK_FOR_TRAINING, USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
+    YEARS_BACK_FOR_TRAINING, FINE_TUNE_LR, FINE_TUNE_EPOCHS
 )
 
 logger = logging.getLogger(__name__)

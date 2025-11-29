@@ -15,7 +15,7 @@ from server.database import (
 from server.services.crawler_service import CrawlerService
 from server.services.training_service import TrainingService
 from server.config import (
-    MODELS_DIR, USE_FINE_TUNE_BY_DEFAULT, FINE_TUNE_LR, FINE_TUNE_EPOCHS
+    MODELS_DIR, FINE_TUNE_LR, FINE_TUNE_EPOCHS
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -263,6 +263,30 @@ async def get_forecast(user: EvnAccount = Depends(get_user_by_username), db: Ses
     df_processed = ts.preprocess_for_base_model(df)
     if len(df_processed) < timesteps + 1:
         raise HTTPException(status_code=400, detail=f"Không đủ dữ liệu để dự báo. Cần ít nhất {timesteps + 1} mẫu")
+    # Lấy ngày cuối cùng từ dữ liệu gốc để tính ngày dự báo
+    last_date = None
+    import pandas as pd
+    if 'DATE_ONLY' in df.columns:
+        last_date = df['DATE_ONLY'].iloc[-1]
+    elif 'DATE' in df.columns:
+        # Parse từ cột DATE nếu DATE_ONLY không có
+        try:
+            date_parsed = pd.to_datetime(df['DATE'].iloc[-1], errors='coerce', dayfirst=True)
+            if pd.notna(date_parsed):
+                last_date = date_parsed.date()
+            else:
+                logger.warning(f"Không parse được ngày từ cột DATE: {df['DATE'].iloc[-1]}")
+        except Exception as e:
+            logger.warning(f"Lỗi khi parse ngày từ cột DATE: {str(e)}")
+    else:
+        logger.warning(f"Không tìm thấy cột DATE hoặc DATE_ONLY trong dataframe. Các cột có sẵn: {list(df.columns)}")
+    if last_date:
+        from datetime import timedelta
+        forecast_date = last_date + timedelta(days=1)
+        forecast_date_str = forecast_date.strftime('%Y-%m-%d')
+    else:
+        forecast_date_str = None
+        logger.warning("Không lấy được ngày cuối cùng từ dữ liệu, forecast_date sẽ là null")
     window = df_processed.iloc[-timesteps:].values
     window_scaled = scaler.transform(window)
     x_in = np.expand_dims(window_scaled, axis=0)
@@ -271,7 +295,224 @@ async def get_forecast(user: EvnAccount = Depends(get_user_by_username), db: Ses
     dummy = np.zeros((1, n_feat + 1))
     dummy[0, -1] = y_hat_scaled[0, 0]
     y_hat = scaler.inverse_transform(dummy)[0, -1]
-    return {"horizon": 1, "unit": "days", "predictions": [float(y_hat)]}
+    return {
+        "horizon": 1, 
+        "unit": "days", 
+        "forecast_date": forecast_date_str,
+        "predictions": [float(y_hat)]
+    }
+
+def forecast_multiple_days(
+    model, scaler, df_processed, df_original, timesteps, num_days, location, db
+):
+    """Helper function để dự báo nhiều ngày"""
+    import pandas as pd
+    import numpy as np
+    from datetime import timedelta
+    from server.services.training_service import TrainingService
+    from scripts.preprocess import fetch_open_meteo_weather, add_holiday_and_calendar_cols
+    
+    # Lấy ngày cuối cùng
+    last_date = None
+    if 'DATE_ONLY' in df_original.columns:
+        last_date = df_original['DATE_ONLY'].iloc[-1]
+    elif 'DATE' in df_original.columns:
+        try:
+            date_parsed = pd.to_datetime(df_original['DATE'].iloc[-1], errors='coerce', dayfirst=True)
+            if pd.notna(date_parsed):
+                last_date = date_parsed.date()
+        except Exception:
+            pass
+    
+    if not last_date:
+        raise ValueError("Không lấy được ngày cuối cùng từ dữ liệu")
+    
+    # Lấy dữ liệu thời tiết cho các ngày dự báo
+    start_forecast = last_date + timedelta(days=1)
+    end_forecast = last_date + timedelta(days=num_days)
+    start_str = start_forecast.strftime('%Y-%m-%d')
+    end_str = end_forecast.strftime('%Y-%m-%d')
+    
+    try:
+        weather_forecast = fetch_open_meteo_weather(start_str, end_str, location=location)
+    except Exception as e:
+        logger.warning(f"Không lấy được dữ liệu thời tiết từ API: {str(e)}, sử dụng giá trị trung bình")
+        # Sử dụng giá trị trung bình từ dữ liệu lịch sử
+        temp_avg_mean = df_original['TEMPERATURE_AVG'].mean() if 'TEMPERATURE_AVG' in df_original.columns else 28.0
+        humidity_avg_mean = df_original['HUMIDITY_AVG'].mean() if 'HUMIDITY_AVG' in df_original.columns else 75.0
+        weather_forecast = pd.DataFrame({
+            'DATE_ONLY': [start_forecast + timedelta(days=i) for i in range(num_days)],
+            'TEMPERATURE_AVG': [temp_avg_mean] * num_days,
+            'TEMPERATURE_MAX': [temp_avg_mean + 3] * num_days,
+            'HUMIDITY_AVG': [humidity_avg_mean] * num_days
+        })
+    
+    # Chuẩn hóa DATE_ONLY trong weather_forecast về date object
+    weather_forecast['DATE_ONLY'] = weather_forecast['DATE_ONLY'].apply(
+        lambda x: x if isinstance(x, type(start_forecast)) else pd.to_datetime(x).date() if pd.notna(pd.to_datetime(x, errors='coerce')) else None
+    )
+    
+    # Khởi tạo window từ dữ liệu hiện tại
+    current_window = df_processed.iloc[-timesteps:].copy()
+    predictions = []
+    forecast_dates = []
+    
+    ts = TrainingService()
+    
+    for day_idx in range(num_days):
+        forecast_date = start_forecast + timedelta(days=day_idx)
+        forecast_dates.append(forecast_date.strftime('%Y-%m-%d'))
+        
+        # Lấy dữ liệu thời tiết cho ngày này
+        weather_row = weather_forecast[weather_forecast['DATE_ONLY'] == forecast_date]
+        if weather_row.empty:
+            # Nếu không có, dùng giá trị trung bình
+            temp_avg = df_original['TEMPERATURE_AVG'].mean() if 'TEMPERATURE_AVG' in df_original.columns else 28.0
+            humidity_avg = df_original['HUMIDITY_AVG'].mean() if 'HUMIDITY_AVG' in df_original.columns else 75.0
+        else:
+            temp_avg = float(weather_row.iloc[0]['TEMPERATURE_AVG']) if pd.notna(weather_row.iloc[0].get('TEMPERATURE_AVG')) else 28.0
+            humidity_avg = float(weather_row.iloc[0]['HUMIDITY_AVG']) if pd.notna(weather_row.iloc[0].get('HUMIDITY_AVG')) else 75.0
+        
+        # Tạo row mới với features cho ngày dự báo
+        new_row_data = {
+            'TEMPERATURE_AVG': temp_avg,
+            'HUMIDITY_AVG': humidity_avg,
+        }
+        
+        # Tính calendar features
+        try:
+            import holidays
+            vn_holidays = holidays.country_holidays('VN')
+            new_row_data['HOLIDAY'] = 1 if forecast_date in vn_holidays else 0
+        except Exception:
+            new_row_data['HOLIDAY'] = 0
+        
+        month = forecast_date.month
+        weekday = forecast_date.weekday()  # Monday=0, Sunday=6
+        new_row_data['month_sin'] = np.sin(2 * np.pi * month / 12)
+        new_row_data['month_cos'] = np.cos(2 * np.pi * month / 12)
+        new_row_data['weekday_sin'] = np.sin(2 * np.pi * weekday / 7)
+        new_row_data['weekday_cos'] = np.cos(2 * np.pi * weekday / 7)
+        
+        # Tạo row mới với đầy đủ features theo thứ tự của df_processed
+        new_row_dict = {}
+        for col in df_processed.columns:
+            if col == 'ENERGY_ADJ' or col == 'ENERGY':
+                new_row_dict[col] = 0.0  # Tạm thời, sẽ được thay thế sau
+            elif col in new_row_data:
+                new_row_dict[col] = new_row_data[col]
+            else:
+                # Nếu thiếu feature, dùng giá trị trung bình từ window hiện tại
+                new_row_dict[col] = current_window[col].mean() if col in current_window.columns else 0.0
+        
+        # Tạo DataFrame với đúng thứ tự cột
+        new_row_df = pd.DataFrame([new_row_dict], columns=df_processed.columns)
+        
+        # Dự báo: scale window hiện tại và dự báo
+        window_scaled = scaler.transform(current_window.values)
+        x_in = np.expand_dims(window_scaled, axis=0)
+        y_hat_scaled = model.predict(x_in, verbose=0)
+        n_feat = window_scaled.shape[1] - 1
+        dummy = np.zeros((1, n_feat + 1))
+        dummy[0, -1] = y_hat_scaled[0, 0]
+        y_hat = scaler.inverse_transform(dummy)[0, -1]
+        predictions.append(float(y_hat))
+        
+        # Cập nhật window: thêm row mới với giá trị dự báo
+        new_row_df['ENERGY_ADJ'] = y_hat
+        # Cập nhật window: bỏ row đầu, thêm row mới (giữ ở dạng unprocessed)
+        current_window = pd.concat([
+            current_window.iloc[1:],
+            new_row_df
+        ], ignore_index=True)
+    
+    return forecast_dates, predictions
+
+@app.get("/api/data/forecast/week")
+async def get_forecast_week(user: EvnAccount = Depends(get_user_by_username), db: Session = Depends(get_db)):
+    """Dự báo cho 7 ngày tiếp theo"""
+    import joblib
+    import numpy as np
+    from server.services.training_service import TrainingService
+    from server.database import get_account_by_username
+    model_dir = MODELS_DIR / f"user_{user.evn_username}"
+    model_path = model_dir / "lstm_model.h5"
+    sx_path = model_dir / "scaler_x.pkl"
+    sy_path = model_dir / "scaler_y.pkl"
+    if not (model_path.exists() and sx_path.exists() and sy_path.exists()):
+        raise HTTPException(status_code=404, detail="Model chưa sẵn sàng")
+    acc = get_account_by_username(db, user.evn_username)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    location = acc.location if acc.location else "Ho Chi Minh City"
+    import tensorflow as tf
+    model = tf.keras.models.load_model(model_path, compile=False)
+    timesteps = 7
+    scaler = joblib.load(sx_path)
+    ts = TrainingService()
+    df = ts.build_dataset_from_db(db, user.evn_username, location)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Không có dữ liệu để dự báo")
+    df_processed = ts.preprocess_for_base_model(df)
+    if len(df_processed) < timesteps + 1:
+        raise HTTPException(status_code=400, detail=f"Không đủ dữ liệu để dự báo. Cần ít nhất {timesteps + 1} mẫu")
+    
+    try:
+        forecast_dates, predictions = forecast_multiple_days(
+            model, scaler, df_processed, df, timesteps, 7, location, db
+        )
+        return {
+            "horizon": 7,
+            "unit": "days",
+            "forecast_dates": forecast_dates,
+            "predictions": predictions
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi dự báo 7 ngày: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Lỗi khi dự báo: {str(e)}")
+
+@app.get("/api/data/forecast/month")
+async def get_forecast_month(user: EvnAccount = Depends(get_user_by_username), db: Session = Depends(get_db)):
+    """Dự báo cho 30 ngày tiếp theo"""
+    import joblib
+    import numpy as np
+    from server.services.training_service import TrainingService
+    from server.database import get_account_by_username
+    model_dir = MODELS_DIR / f"user_{user.evn_username}"
+    model_path = model_dir / "lstm_model.h5"
+    sx_path = model_dir / "scaler_x.pkl"
+    sy_path = model_dir / "scaler_y.pkl"
+    if not (model_path.exists() and sx_path.exists() and sy_path.exists()):
+        raise HTTPException(status_code=404, detail="Model chưa sẵn sàng")
+    acc = get_account_by_username(db, user.evn_username)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản")
+    location = acc.location if acc.location else "Ho Chi Minh City"
+    import tensorflow as tf
+    model = tf.keras.models.load_model(model_path, compile=False)
+    timesteps = 7
+    scaler = joblib.load(sx_path)
+    ts = TrainingService()
+    df = ts.build_dataset_from_db(db, user.evn_username, location)
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Không có dữ liệu để dự báo")
+    df_processed = ts.preprocess_for_base_model(df)
+    if len(df_processed) < timesteps + 1:
+        raise HTTPException(status_code=400, detail=f"Không đủ dữ liệu để dự báo. Cần ít nhất {timesteps + 1} mẫu")
+    
+    try:
+        forecast_dates, predictions = forecast_multiple_days(
+            model, scaler, df_processed, df, timesteps, 30, location, db
+        )
+        return {
+            "horizon": 30,
+            "unit": "days",
+            "forecast_dates": forecast_dates,
+            "predictions": predictions
+        }
+    except Exception as e:
+        logger.error(f"Lỗi khi dự báo 30 ngày: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Lỗi khi dự báo: {str(e)}")
 
 # History from MySQL (paged)
 @app.get("/api/data/history/db")
