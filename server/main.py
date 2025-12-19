@@ -562,6 +562,8 @@ async def get_history_db(
     }
     
 
+from fastapi import Depends
+from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 class ChatRequest(BaseModel):
@@ -583,6 +585,7 @@ def chat_with_ai(
         "question": req.question,
         "answer": answer
     }
+
 
 
 
