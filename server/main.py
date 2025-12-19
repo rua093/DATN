@@ -5,6 +5,12 @@ from pydantic import BaseModel
 from typing import Optional
 import logging
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
+from server.services.ai_services import ask_energy_ai, ask_energy_ai_for_user
+
+from server.services.training_service import TrainingService
+
 import os
 
 from server.database import (
@@ -17,6 +23,8 @@ from server.services.training_service import TrainingService
 from server.config import (
     MODELS_DIR, FINE_TUNE_LR, FINE_TUNE_EPOCHS
 )
+from fastapi import FastAPI, Body
+from server.services.ai_services import ask_energy_ai
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -552,6 +560,30 @@ async def get_history_db(
         "page_size": page_size,
         "items": items
     }
+    
+
+@app.post("/api/chat")
+def chat_with_ai(
+    evn_username: str,
+    question: str = Body(...),
+    db: Session = Depends(get_db)
+):
+    answer = ask_energy_ai_for_user(
+        evn_username=evn_username,
+        question=question,
+        db=db,
+        history_days=30,
+        forecast_horizon=1
+    )
+    return {
+        "question": question,
+        "answer": answer
+    }
+
+
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
