@@ -562,21 +562,25 @@ async def get_history_db(
     }
     
 
+from pydantic import BaseModel
+
+class ChatRequest(BaseModel):
+    question: str
+
 @app.post("/api/chat")
 def chat_with_ai(
     evn_username: str,
-    question: str = Body(...),
+    req: ChatRequest,
     db: Session = Depends(get_db)
 ):
     answer = ask_energy_ai_for_user(
         evn_username=evn_username,
-        question=question,
+        question=req.question,
         db=db,
-        history_days=30,
-        forecast_horizon=1
+        forecast_horizon=30
     )
     return {
-        "question": question,
+        "question": req.question,
         "answer": answer
     }
 
